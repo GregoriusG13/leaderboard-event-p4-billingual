@@ -41,8 +41,8 @@ const CONFIG = {
   topN : 10,
 
   // Kredensial admin — WAJIB GANTI sebelum deploy!
-  adminUser : "admin",
-  adminPass : "papanjuara2025",
+  adminUser : "GregAdmin",
+  adminPass : "papanjuara2026",
 
   musicAutoplay : false,
 
