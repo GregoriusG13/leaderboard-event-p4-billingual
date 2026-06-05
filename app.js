@@ -49,7 +49,7 @@ const CONFIG = {
   // ── ImgBB (untuk upload foto peserta) ──────────────────────────
   // Dapatkan API key gratis di https://api.imgbb.com
   // Tempel key-nya di bawah ini (di antara tanda kutip)
-  imgbbApiKey : "GANTI_DENGAN_API_KEY_IMGBB",
+  imgbbApiKey : "dbc4ede3929e4f7c56bcfd3620c0d73f",
 
   // Daftar nama murid (dropdown pendaftaran)
   daftarNama : [
