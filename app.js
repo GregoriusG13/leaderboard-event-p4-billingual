@@ -472,7 +472,7 @@ function jalankanCountdown321() {
       playSound('sfx-countdown');
     } else if (n===0) {
       // "MULAI!"
-      num.textContent='MULAI!';
+      num.textContent='GO!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       playSound('sfx-confetti'); // bunyi semangat untuk MULAI
       fireConfetti();
