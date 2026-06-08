@@ -453,7 +453,7 @@ function showStatusOverlay(icon, title, msg) {
   ov.style.display='flex';
 }
 
-/** Animasi countdown 3-2-1-MULAI di leaderboard, dengan suara tiap angka */
+/** Animasi countdown 3-2-1-MULAI di leaderboard. Suara diputar SEKALI di awal. */
 function jalankanCountdown321() {
   const ov=document.getElementById('countdown-overlay');
   const num=document.getElementById('countdown-number');
@@ -462,17 +462,16 @@ function jalankanCountdown321() {
   let n=3;
   num.textContent=n;
   num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
-  playSound('sfx-countdown');   // bunyi untuk "3"
+  playSound('sfx-countdown');   // diputar SEKALI saja (file sudah berisi 3-2-1 lengkap)
   const iv=setInterval(()=>{
     n--;
     if (n>0) {
-      // angka 2 dan 1
+      // angka 2 dan 1 — TANPA suara lagi (biar tidak numpuk)
       num.textContent=n;
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
-      playSound('sfx-countdown');
     } else if (n===0) {
       // "MULAI!"
-      num.textContent='GO!';
+      num.textContent='MULAI!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       playSound('sfx-confetti'); // bunyi semangat untuk MULAI
       fireConfetti();
