@@ -32,13 +32,13 @@ const CONFIG = {
   topN : 10,
 
   // Admin — WAJIB GANTI sebelum deploy!
-  adminUser : "GregAdmin",
-  adminPass : "papanjuara2026",
+  adminUser : "admin",
+  adminPass : "papanjuara2025",
 
   musicAutoplay : false,
 
   // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "dbc4ede3929e4f7c56bcfd3620c0d73f",
+  imgbbApiKey : "GANTI_DENGAN_API_KEY_IMGBB",
 
   // Daftar 12 lomba
   daftarLomba : [
@@ -61,8 +61,11 @@ const STATE = {
   // Timer
   eventStatus:'idle',  // 'idle' | 'running' | 'ended'
   eventEndAt:null,     // timestamp (ms) kapan event berakhir
+  eventStartedAt:null, // timestamp (ms) kapan event dimulai
   timerInterval:null,
   countdownDone:false, // sudah tampilkan animasi 3-2-1?
+  _lastCountdownEndAt:null, // endAt terakhir yang sudah ditampilkan countdown-nya
+  _endToastShown:false,     // sudah tampilkan toast "event selesai"?
 };
 
 /* ================================================================
@@ -147,6 +150,10 @@ function getAllPeserta() { return STATE.cachePeserta; }
  */
 async function registerPeserta(nama, kelas, username, password) {
   username = username.trim();
+  nama = nama.trim();
+  // Validasi nickname harus diakhiri "Fam"
+  if (!nama.toLowerCase().endsWith('fam'))
+    return { ok:false, msg:'Nickname harus diakhiri kata "Fam"' };
   // Validasi username diawali "peserta"
   if (!username.toLowerCase().startsWith('peserta'))
     return { ok:false, msg:'Username harus diawali kata "peserta"' };
@@ -158,7 +165,7 @@ async function registerPeserta(nama, kelas, username, password) {
   if (!dup.empty) return { ok:false, msg:'Username sudah dipakai, pilih yang lain' };
 
   const data = {
-    nama: nama.trim(), kelas: kelas.trim(), username, password,
+    nama, kelas: kelas.trim(), username, password,
     foto:'', createdAt: firebase.firestore.FieldValue.serverTimestamp(),
   };
   const ref = await db.collection('peserta').add(data);
@@ -281,6 +288,7 @@ function listenTimer() {
       const d = doc.data();
       STATE.eventStatus = d.status || 'idle';
       STATE.eventEndAt  = d.endAt || null;
+      STATE.eventStartedAt = d.startedAt || null;
     }
     onTimerUpdate();
   }, err=>console.error('[FS timer]',err));
@@ -394,22 +402,40 @@ function updateLeaderboardTimer() {
   renderTimerText();
 
   if (STATE.eventStatus==='running') {
-    // Tampilkan animasi 3-2-1 hanya sekali saat baru mulai
-    const baruMulai = STATE.eventEndAt && (STATE.eventEndAt - Date.now()) > 0
-                      && !STATE.countdownDone
-                      && sessionStorage.getItem('cdShown') !== String(STATE.eventEndAt);
-    if (baruMulai) {
-      STATE.countdownDone = true;
-      sessionStorage.setItem('cdShown', String(STATE.eventEndAt));
-      jalankanCountdown321();
+    // Tampilkan animasi 3-2-1 setiap kali ada event BARU (endAt berbeda dari yang terakhir ditampilkan)
+    // dan sisa waktu memang masih banyak (baru mulai, bukan refresh di tengah jalan)
+    const sisaMs = STATE.eventEndAt ? (STATE.eventEndAt - Date.now()) : 0;
+    const lastCd = STATE._lastCountdownEndAt;
+    const eventBaru = STATE.eventEndAt && lastCd !== STATE.eventEndAt;
+
+    // Hitung total durasi event untuk tahu apakah ini "baru mulai"
+    // Tampilkan countdown jika event baru DAN sisa waktu > (durasi - 5 detik)
+    // Artinya kita masih di ~5 detik pertama event
+    if (eventBaru && sisaMs > 0) {
+      const startedAt = STATE.eventStartedAt || 0;
+      const detikSejakMulai = startedAt ? (Date.now() - startedAt)/1000 : 0;
+      // Hanya jalankan countdown kalau event baru dimulai (< 5 detik lalu)
+      if (detikSejakMulai < 5) {
+        STATE._lastCountdownEndAt = STATE.eventEndAt;
+        jalankanCountdown321();
+      } else {
+        // Event sudah jalan sebelum kita buka halaman → jangan countdown, langsung tampil
+        STATE._lastCountdownEndAt = STATE.eventEndAt;
+      }
     }
     if (statusOverlay) statusOverlay.style.display='none';
     if (timerDisplay)  timerDisplay.style.display='flex';
     if (statusEvent)   statusEvent.textContent='🟢 Berlangsung';
+    STATE._endToastShown=false; // reset agar toast "selesai" bisa muncul lagi nanti
   } else if (STATE.eventStatus==='ended') {
-    showStatusOverlay('🏁','Event Selesai','Leaderboard telah ditutup. Terima kasih!');
+    // Event selesai: leaderboard TETAP terlihat, hanya tampilkan badge "Ditutup"
+    // Overlay status disembunyikan agar papan juara tetap bisa dilihat
+    const ov=document.getElementById('status-overlay');
+    if (ov) ov.style.display='none';
     if (timerDisplay) timerDisplay.style.display='flex';
     if (statusEvent)  statusEvent.textContent='🔴 Ditutup';
+    // Tampilkan toast info sekali
+    if (!STATE._endToastShown) { STATE._endToastShown=true; showToast('🏁 Event selesai! Leaderboard final ditampilkan.'); }
   } else {
     showStatusOverlay('⏳','Menunggu Dimulai','Leaderboard belum dibuka oleh admin');
     if (timerDisplay) timerDisplay.style.display='none';
@@ -427,7 +453,7 @@ function showStatusOverlay(icon, title, msg) {
   ov.style.display='flex';
 }
 
-/** Animasi countdown 3-2-1 di leaderboard */
+/** Animasi countdown 3-2-1-MULAI di leaderboard, dengan suara tiap angka */
 function jalankanCountdown321() {
   const ov=document.getElementById('countdown-overlay');
   const num=document.getElementById('countdown-number');
@@ -435,12 +461,25 @@ function jalankanCountdown321() {
   ov.style.display='flex';
   let n=3;
   num.textContent=n;
-  playSound('sfx-countdown');
+  num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
+  playSound('sfx-countdown');   // bunyi untuk "3"
   const iv=setInterval(()=>{
     n--;
-    if (n>0) { num.textContent=n; num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10); playSound('sfx-countdown'); }
-    else if (n===0) { num.textContent='MULAI!'; num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10); fireConfetti(); }
-    else { clearInterval(iv); ov.style.display='none'; }
+    if (n>0) {
+      // angka 2 dan 1
+      num.textContent=n;
+      num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
+      playSound('sfx-countdown');
+    } else if (n===0) {
+      // "MULAI!"
+      num.textContent='MULAI!';
+      num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
+      playSound('sfx-confetti'); // bunyi semangat untuk MULAI
+      fireConfetti();
+    } else {
+      clearInterval(iv);
+      ov.style.display='none';
+    }
   },1000);
 }
 
@@ -826,11 +865,11 @@ async function deleteCollection(name){const snap=await db.collection(name).get()
    ================================================================ */
 const HELP_CONTENT = {
   peserta:{icon:'🎭',title:'Panduan Peserta',steps:[
-    '<strong>Daftar</strong> dengan nama, kelas, username (diawali "peserta"), dan password.',
+    '<strong>Daftar</strong> dengan nickname (diakhiri "Fam"), kelas, username (diawali "peserta"), dan password.',
     '<strong>Login</strong> pakai username & password kamu (bisa dari HP mana saja).',
     '<strong>Upload foto</strong> dengan mengetuk lingkaran foto. Tampil di leaderboard kalau Top 3.',
     '<strong>Tunjukkan QR Code</strong> ke panitia setiap selesai ikut/menang lomba.',
-  ],note:'💡 Username wajib diawali kata "peserta". Simpan password baik-baik ya!'},
+  ],note:'💡 Nickname diakhiri "Fam", username diawali "peserta". Simpan password baik-baik ya!'},
   panitia:{icon:'⚡',title:'Panduan Panitia',steps:[
     'Pastikan <strong>event sudah dimulai admin</strong> (banner hijau di atas).',
     '<strong>Pilih lomba</strong> yang sedang berlangsung.',
@@ -846,13 +885,10 @@ function showHelp(page){const d=HELP_CONTENT[page];if(!d)return;
 function closeHelp(event){if(event&&event.target.id!=='help-overlay')return;document.getElementById('help-overlay').style.display='none';}
 
 /**
- * Tampilkan help otomatis HANYA sekali per device (pakai localStorage penanda).
+ * Tampilkan help otomatis SETIAP kali halaman dibuka.
  * @param {'peserta'|'panitia'} page
  */
 function maybeAutoHelp(page) {
-  const key = `helpShown_${page}`;
-  if (localStorage.getItem(key)) return; // sudah pernah → jangan tampilkan
-  localStorage.setItem(key, '1');
-  // Delay sebentar agar halaman ter-render dulu
+  // Delay sebentar agar halaman ter-render dulu, lalu tampilkan help
   setTimeout(() => showHelp(page), 500);
 }
