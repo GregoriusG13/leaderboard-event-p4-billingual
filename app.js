@@ -476,6 +476,7 @@ function jalankanCountdown321() {
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       playSound('sfx-confetti'); // bunyi semangat untuk MULAI
       fireConfetti();
+      playBGM();  
     } else {
       clearInterval(iv);
       ov.style.display='none';
