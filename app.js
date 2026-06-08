@@ -321,6 +321,7 @@ function startLocalTimerTick() {
     if (STATE.eventEndAt && Date.now() >= STATE.eventEndAt) {
       STATE.eventStatus = 'ended';
       clearInterval(STATE.timerInterval);
+      playSound('sfx-timeup');
       const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
       if (page==='leaderboard') updateLeaderboardTimer();
       if (page==='panitia')     updatePanitiaStatus();
@@ -471,7 +472,7 @@ function jalankanCountdown321() {
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
     } else if (n===0) {
       // "MULAI!"
-      num.textContent='MULAI!';
+      num.textContent='GO!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       playSound('sfx-confetti'); // bunyi semangat untuk MULAI
       fireConfetti();
