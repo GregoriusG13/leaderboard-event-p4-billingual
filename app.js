@@ -32,13 +32,13 @@ const CONFIG = {
   topN : 10,
 
   // Admin — WAJIB GANTI sebelum deploy!
-  adminUser : "admin",
-  adminPass : "papanjuara2025",
+  adminUser : "GregAdmin",
+  adminPass : "papanjuara2026",
 
   musicAutoplay : false,
 
   // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "GANTI_DENGAN_API_KEY_IMGBB",
+  imgbbApiKey : "dbc4ede3929e4f7c56bcfd3620c0d73f",
 
   // Daftar 12 lomba
   daftarLomba : [
