@@ -38,13 +38,13 @@ const CONFIG = {
   musicAutoplay : false,
 
   // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "GANTI_DENGAN_API_KEY_IMGBB",
+  imgbbApiKey : "dbc4ede3929e4f7c56bcfd3620c0d73f",
 
   // Daftar 12 lomba
   daftarLomba : [
-    "Lomba 1", "Lomba 2", "Lomba 3", "Lomba 4",
-    "Lomba 5", "Lomba 6", "Lomba 7", "Lomba 8",
-    "Lomba 9", "Lomba 10", "Lomba 11", "Lomba 12",
+    "Congklak", "Bentengan", "Sipak rago", "Boi-boian",
+    "Klek, engklek", "Golong-golong", "Dam-daman", "Marble action",
+    "Kelereng billiard", "Bola bekel 3000", "Lucky compass", "Ketapel",
   ],
 };
 
