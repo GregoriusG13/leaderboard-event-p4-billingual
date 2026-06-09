@@ -38,13 +38,13 @@ const CONFIG = {
   musicAutoplay : false,
 
   // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "dbc4ede3929e4f7c56bcfd3620c0d73f",
+  imgbbApiKey : "GANTI_DENGAN_API_KEY_IMGBB",
 
   // Daftar 12 lomba
   daftarLomba : [
-    "Congklak", "Bentengan", "Sipak rago", "Boi-boian",
-    "Klek, engklek", "Golong-golong", "Dam-daman", "Marble action",
-    "Kelereng billiard", "Bola bekel 3000", "Lucky compass", "Ketapel",
+    "Congklak", "Bentengan", "Sipak Rago", "Boi-boian",
+    "Klek Engklek", "Golong-golong", "Dam-daman", "Marble Action",
+    "Kelereng Billiard", "Bola Bekel 3000", "Lucky Compass", "Ketapel",
   ],
 };
 
@@ -53,11 +53,12 @@ const CONFIG = {
    ================================================================ */
 const STATE = {
   jawara:[], penjelajah:[], prevJawara:[], prevPenjelajah:[],
-  musicOn: CONFIG.musicAutoplay,
+  musicOn: true,
+  _audioUnlocked:false,
   lombaAktif:null, modeAktif:null, qrScanner:null, scanLog:[],
   pesertaAktif:null,
-  cachePeserta:[], cacheLog:[],
-  unsubPeserta:null, unsubLog:null, unsubTimer:null,
+  cachePeserta:[], cacheLog:[], cacheVote:[],
+  unsubPeserta:null, unsubLog:null, unsubTimer:null, unsubVote:null, unsubVoteDisplay:null,
   // Timer
   eventStatus:'idle',  // 'idle' | 'running' | 'ended'
   eventEndAt:null,     // timestamp (ms) kapan event berakhir
@@ -126,6 +127,7 @@ function showAdminPanel() {
   populateLombaFilter(); generateAdminQR();
   listenPeserta(()=>renderPesertaTable());
   listenLog(()=>{ renderPesertaTable(); renderLogTable(); });
+  listenVote(()=>updateVoteAdminPreview());
   updateAdminTimerUI();
 }
 function doLogout() { sessionStorage.removeItem('adminLoggedIn'); location.reload(); }
@@ -321,7 +323,6 @@ function startLocalTimerTick() {
     if (STATE.eventEndAt && Date.now() >= STATE.eventEndAt) {
       STATE.eventStatus = 'ended';
       clearInterval(STATE.timerInterval);
-      playSound('sfx-timeup');
       const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
       if (page==='leaderboard') updateLeaderboardTimer();
       if (page==='panitia')     updatePanitiaStatus();
@@ -472,10 +473,11 @@ function jalankanCountdown321() {
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
     } else if (n===0) {
       // "MULAI!"
-      num.textContent='GO!';
+      num.textContent='MULAI!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       playSound('sfx-confetti'); // bunyi semangat untuk MULAI
       fireConfetti();
+      playBGM();                 // BGM mulai pas GO! (hanya bunyi jika musik tidak di-mute)
     } else {
       clearInterval(iv);
       ov.style.display='none';
@@ -489,8 +491,17 @@ function jalankanCountdown321() {
 function initLeaderboard() {
   listenPeserta(()=>refreshLeaderboard());
   listenLog(()=>refreshLeaderboard());
+  listenVotingDisplay();  // dengarkan flag tampilkan hasil voting
   updateLeaderboardTimer();
-  if (CONFIG.musicAutoplay) setTimeout(playBGM,1000);
+  // Unlock audio otomatis saat ada interaksi pertama (klik/sentuh) di mana saja.
+  // Ini agar BGM bisa autoplay pas countdown GO! tanpa diblokir browser.
+  const unlockOnce = () => {
+    unlockAudio();
+    document.removeEventListener('click', unlockOnce);
+    document.removeEventListener('touchstart', unlockOnce);
+  };
+  document.addEventListener('click', unlockOnce);
+  document.addEventListener('touchstart', unlockOnce);
 }
 function refreshLeaderboard() {
   setRefreshIndicator('loading');
@@ -558,6 +569,7 @@ function updateFooter(total){const u=document.getElementById('last-update'),t=do
    ================================================================ */
 function initPeserta() {
   maybeAutoHelp('peserta');  // tampilkan help otomatis sekali
+  listenVote();              // dengarkan data vote (untuk cek status)
 
   listenPeserta(()=>{
     if (STATE.pesertaAktif) {
@@ -661,6 +673,241 @@ async function handleFotoUpload(event) {
 function logoutPeserta() {
   if (!confirm('Keluar dari akun ini?')) return;
   localStorage.removeItem('pesertaAktifId'); STATE.pesertaAktif=null; location.reload();
+}
+
+/* ================================================================
+   BAGIAN 11B — VOTING LOMBA FAVORIT
+   Collection "vote": { pesertaId, lomba, waktu }
+   - Peserta hanya bisa vote lomba yang DIA IKUTI (ada di log penjelajah)
+   - Hanya 1 vote per peserta
+   - Hanya bisa vote SETELAH event berakhir (status 'ended')
+   ================================================================ */
+
+/**
+ * Tampilkan modal voting untuk peserta.
+ * Hanya menampilkan lomba yang peserta ikuti (mode penjelajah).
+ */
+async function showVoting() {
+  const overlay = document.getElementById('vote-overlay');
+  const body    = document.getElementById('vote-body');
+  if (!overlay || !body) return;
+
+  // Harus sudah login
+  if (!STATE.pesertaAktif) {
+    showToast('⚠️ Login dulu untuk bisa vote');
+    return;
+  }
+
+  // Voting hanya setelah event berakhir
+  if (STATE.eventStatus !== 'ended') {
+    body.innerHTML = `<p class="vote-info">⏳ Voting dibuka setelah event selesai.<br>Tunggu sampai waktu habis ya!</p>`;
+    overlay.style.display='flex';
+    return;
+  }
+
+  body.innerHTML = `<p class="vote-info">⏳ Memuat lomba yang kamu ikuti...</p>`;
+  overlay.style.display='flex';
+
+  const pid = STATE.pesertaAktif.id;
+
+  // Cek apakah sudah pernah vote
+  const sudahVote = await db.collection('vote').where('pesertaId','==',pid).get();
+  if (!sudahVote.empty) {
+    const v = sudahVote.docs[0].data();
+    body.innerHTML = `<p class="vote-info">✅ Kamu sudah vote!<br>Pilihan kamu: <strong>${escHtml(v.lomba)}</strong><br><span style="font-size:.75rem;color:var(--cream-dark)">Terima kasih sudah berpartisipasi 🎉</span></p>`;
+    return;
+  }
+
+  // Ambil lomba yang peserta ikuti (dari log mode penjelajah)
+  const lombaDiikuti = [...new Set(
+    getAllLog().filter(l => l.pesertaId===pid && l.mode==='penjelajah').map(l => l.lomba)
+  )];
+
+  if (!lombaDiikuti.length) {
+    body.innerHTML = `<p class="vote-info">😅 Kamu belum tercatat mengikuti lomba apapun, jadi belum bisa vote.</p>`;
+    return;
+  }
+
+  // Tampilkan tombol lomba yang diikuti + yang tidak diikuti (disabled)
+  const semuaLomba = CONFIG.daftarLomba;
+  body.innerHTML = `
+    <p class="vote-info">Pilih <strong>1 lomba favorit</strong> kamu (hanya lomba yang kamu ikuti yang bisa dipilih):</p>
+    <div class="vote-grid">
+      ${semuaLomba.map(lomba => {
+        const ikut = lombaDiikuti.includes(lomba);
+        return `<button class="vote-opt ${ikut?'':'locked'}"
+                  ${ikut?`onclick="kirimVote('${escHtml(lomba)}')"`:'disabled'}>
+                  ${ikut?'🎮':'🔒'} ${escHtml(lomba)}
+                </button>`;
+      }).join('')}
+    </div>`;
+}
+
+/** Kirim vote peserta */
+async function kirimVote(lomba) {
+  if (!STATE.pesertaAktif) return;
+  const pid = STATE.pesertaAktif.id;
+  if (!confirm(`Vote "${lomba}" sebagai lomba favorit? Vote tidak bisa diubah.`)) return;
+
+  // Cek ulang belum vote (jaga-jaga)
+  const cek = await db.collection('vote').where('pesertaId','==',pid).get();
+  if (!cek.empty) { showToast('Kamu sudah vote sebelumnya'); return; }
+
+  await db.collection('vote').add({
+    pesertaId: pid, lomba,
+    waktu: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+  document.getElementById('vote-body').innerHTML =
+    `<p class="vote-info">✅ Vote berhasil!<br>Kamu memilih: <strong>${escHtml(lomba)}</strong><br><span style="font-size:.75rem;color:var(--cream-dark)">Terima kasih 🎉</span></p>`;
+  showToast('🗳️ Vote kamu tercatat!');
+}
+
+function closeVoting(event) {
+  if (event && event.target.id!=='vote-overlay') return;
+  document.getElementById('vote-overlay').style.display='none';
+}
+
+/* ── ADMIN & LEADERBOARD: hasil voting ── */
+
+/** Listen voting realtime (dipakai admin & leaderboard) */
+function listenVote(cb) {
+  if (STATE.unsubVote) STATE.unsubVote();
+  STATE.unsubVote = db.collection('vote').onSnapshot(snap => {
+    STATE.cacheVote = snap.docs.map(d=>({id:d.id,...d.data()}));
+    if (cb) cb();
+  }, err=>console.error('[FS vote]',err));
+}
+
+/** Hitung lomba dengan vote terbanyak. @returns {{lomba, count}|null} */
+function hitungVoteTerbanyak() {
+  const votes = STATE.cacheVote || [];
+  if (!votes.length) return null;
+  const map = {};
+  votes.forEach(v => map[v.lomba] = (map[v.lomba]||0)+1);
+  let best=null, bestCount=0;
+  for (const [lomba,count] of Object.entries(map)) {
+    if (count>bestCount) { best=lomba; bestCount=count; }
+  }
+  return { lomba:best, count:bestCount };
+}
+
+/** ADMIN: tampilkan hasil voting di leaderboard (set flag di Firestore) */
+async function showVotingResult() {
+  const hasil = hitungVoteTerbanyak();
+  if (!hasil) { showToast('⚠️ Belum ada voting masuk'); return; }
+  await db.collection('event').doc('voting').set({
+    show:true, lomba:hasil.lomba, count:hasil.count, updatedAt:Date.now(),
+  });
+  showToast(`📊 Menampilkan: ${hasil.lomba} (${hasil.count} suara)`);
+}
+
+/** ADMIN: sembunyikan hasil voting */
+async function hideVotingResult() {
+  await db.collection('event').doc('voting').set({ show:false }, { merge:true });
+  showToast('🙈 Hasil voting disembunyikan');
+}
+
+/** ADMIN: reset semua voting */
+async function resetVoting() {
+  if (!confirm('⚠️ Hapus semua data voting?')) return;
+  await deleteCollection('vote');
+  await db.collection('event').doc('voting').set({ show:false }, { merge:true });
+  showToast('🗑️ Voting direset');
+}
+
+/** Listen flag tampilkan hasil voting (untuk leaderboard) */
+function listenVotingDisplay() {
+  if (STATE.unsubVoteDisplay) STATE.unsubVoteDisplay();
+  STATE.unsubVoteDisplay = db.collection('event').doc('voting').onSnapshot(doc => {
+    const ov = document.getElementById('vote-result-overlay');
+    if (!ov) return;
+    if (doc.exists && doc.data().show) {
+      const d = doc.data();
+      document.getElementById('vote-result-name').textContent  = d.lomba || '—';
+      document.getElementById('vote-result-count').textContent = `${d.count||0} suara`;
+      ov.style.display='flex';
+      fireConfetti();
+    } else {
+      ov.style.display='none';
+    }
+  }, err=>console.error('[FS voteDisplay]',err));
+}
+
+/** Update preview hasil voting di admin */
+function updateVoteAdminPreview() {
+  const el = document.getElementById('vote-admin-preview');
+  if (!el) return;
+  const hasil = hitungVoteTerbanyak();
+  const total = (STATE.cacheVote||[]).length;
+  if (!hasil) { el.textContent='Belum ada data voting.'; return; }
+  el.innerHTML = `Total suara masuk: <strong>${total}</strong><br>Terbanyak: <strong style="color:var(--gold)">${escHtml(hasil.lomba)}</strong> (${hasil.count} suara)`;
+}
+
+/**
+ * Helper: ubah array of array jadi string CSV & trigger download.
+ * @param {Array<Array>} rows - baris pertama = header
+ * @param {string} filename
+ */
+function downloadCSV(rows, filename) {
+  // Escape tiap sel: bungkus tanda kutip & ganti " jadi ""
+  const csv = rows.map(r =>
+    r.map(cell => `"${String(cell ?? '').replace(/"/g,'""')}"`).join(',')
+  ).join('\r\n');
+  // Tambah BOM agar Excel baca UTF-8 (emoji & karakter Indonesia aman)
+  const blob = new Blob(['\uFEFF'+csv], { type:'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+/**
+ * Export DETAIL voting: tiap baris = 1 vote (nama, kelas, username, lomba, waktu).
+ * Data peserta diambil dari cache agar nama/kelas ikut.
+ */
+function exportVoteCSV() {
+  const votes = STATE.cacheVote || [];
+  if (!votes.length) { showToast('⚠️ Belum ada data voting'); return; }
+
+  const peserta = getAllPeserta();
+  const rows = [['Nama','Kelas','Username','Lomba Favorit','Waktu Vote']];
+  votes
+    .sort((a,b)=>toMillis(a.waktu)-toMillis(b.waktu))
+    .forEach(v => {
+      const p = peserta.find(x => x.id === v.pesertaId) || {};
+      rows.push([
+        p.nama || '(terhapus)',
+        p.kelas || '-',
+        p.username || '-',
+        v.lomba,
+        formatWaktu(v.waktu),
+      ]);
+    });
+
+  const tgl = new Date().toISOString().slice(0,10);
+  downloadCSV(rows, `voting-detail-${tgl}.csv`);
+  showToast('📥 Detail voting diunduh');
+}
+
+/**
+ * Export REKAP voting: jumlah suara per lomba (urut terbanyak).
+ */
+function exportVoteRekapCSV() {
+  const votes = STATE.cacheVote || [];
+  if (!votes.length) { showToast('⚠️ Belum ada data voting'); return; }
+
+  const map = {};
+  votes.forEach(v => map[v.lomba] = (map[v.lomba]||0)+1);
+
+  const rows = [['Peringkat','Lomba','Jumlah Suara']];
+  Object.entries(map)
+    .sort((a,b)=>b[1]-a[1])
+    .forEach(([lomba,count],i) => rows.push([i+1, lomba, count]));
+
+  const tgl = new Date().toISOString().slice(0,10);
+  downloadCSV(rows, `voting-rekap-${tgl}.csv`);
+  showToast('📥 Rekap voting diunduh');
 }
 
 /* ================================================================
@@ -817,9 +1064,51 @@ function printQR(){const box=document.getElementById('admin-qr-pendaftaran');if(
    BAGIAN 14 — AUDIO & EFEK
    ================================================================ */
 function playSound(id){try{const e=document.getElementById(id);if(!e)return;e.currentTime=0;e.volume=.5;e.play().catch(()=>{});}catch(e){}}
-function toggleMusic(){const b=document.getElementById('bgm-loop'),btn=document.getElementById('btn-music');if(!b)return;
-  if(STATE.musicOn){b.pause();STATE.musicOn=false;if(btn)btn.textContent='🔇';}else{playBGM();STATE.musicOn=true;if(btn)btn.textContent='🎵';}}
-function playBGM(){const b=document.getElementById('bgm-loop');if(!b)return;b.volume=.15;b.play().catch(()=>{});}
+/**
+ * Toggle mute/unmute musik.
+ * Saat dinyalakan, kalau event belum mulai → BGM disiapkan (unlock) tapi
+ * baru benar-benar bunyi pas countdown GO!. Kalau event sedang jalan → langsung bunyi.
+ */
+function toggleMusic(){
+  const b=document.getElementById('bgm-loop'),btn=document.getElementById('btn-music');
+  if(!b)return;
+  if(STATE.musicOn){
+    // Matikan
+    b.pause(); STATE.musicOn=false; if(btn)btn.textContent='🔇';
+  } else {
+    // Nyalakan
+    STATE.musicOn=true; if(btn)btn.textContent='🎵';
+    // Unlock audio: putar sebentar lalu pause (trik agar browser izinkan autoplay nanti)
+    unlockAudio();
+    // Kalau event sedang berjalan, langsung putar. Kalau belum, tunggu countdown GO!
+    if (STATE.eventStatus==='running') playBGM();
+  }
+}
+
+/**
+ * "Unlock" audio dengan memutar lalu langsung pause saat ada interaksi user.
+ * Ini bikin browser mengizinkan audio diputar otomatis nanti (pas GO!).
+ */
+function unlockAudio(){
+  const b=document.getElementById('bgm-loop');
+  if(!b || STATE._audioUnlocked) return;
+  b.volume=0;
+  b.play().then(()=>{
+    b.pause(); b.currentTime=0; b.volume=0.15;
+    STATE._audioUnlocked=true;
+  }).catch(()=>{});
+}
+
+/** Mulai putar BGM (hanya jika musik dalam keadaan ON / tidak di-mute) */
+function playBGM(){
+  const b=document.getElementById('bgm-loop');
+  if(!b) return;
+  if(!STATE.musicOn) return;   // kalau di-mute, jangan bunyi
+  b.volume=0.15;
+  b.play().catch(()=>{
+    console.info('[BGM] Autoplay diblokir. Klik tombol musik 🎵 dulu untuk mengaktifkan.');
+  });
+}
 function fireConfetti(){if(typeof confetti==='undefined')return;
   confetti({particleCount:120,spread:80,origin:{y:.6},colors:['#F5C842','#FFE68A','#9B1B30','#1A6B4A','#FDF3DC'],scalar:1.2});
   setTimeout(()=>{confetti({particleCount:60,angle:60,spread:55,origin:{x:0},colors:['#F5C842','#9B1B30']});
