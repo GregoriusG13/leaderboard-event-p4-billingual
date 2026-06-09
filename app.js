@@ -38,7 +38,7 @@ const CONFIG = {
   musicAutoplay : false,
 
   // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "dbc4ede3929e4f7c56bcfd3620c0d73fB",
+  imgbbApiKey : "91660289a3378364ccc77d619b316dbc",
 
   // Daftar 12 lomba
   daftarLomba : [
