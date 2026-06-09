@@ -32,12 +32,11 @@
 <body>
   <audio id="sfx-rank-up"   src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
   <audio id="sfx-rank-down" src="https://assets.mixkit.co/active_storage/sfx/2575/2575-preview.mp3" preload="auto"></audio>
-  <!-- <audio id="sfx-confetti"  src="https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3" preload="auto"></audio> -->
+  <audio id="sfx-confetti"  src="https://assets.mixkit.co/active_storage/sfx/2000/2000-preview.mp3" preload="auto"></audio>
   <audio id="sfx-scan-ok"   src="https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3" preload="auto"></audio>
-  <audio id="sfx-scan-err"  src="https://assets.mixkit.co/active_storage/sfx/2575/2575-preview.mp33" preload="auto"></audio>
-  <audio id="sfx-countdown" src="countdown.mp3" preload="auto"></audio>
-  <audio id="bgm-loop" src="leaderboard-song.mp3" loop preload="auto"></audio>
-  <audio id="sfx-timeup" src="done.mp3" preload="auto"></audio>
+  <audio id="sfx-scan-err"  src="https://assets.mixkit.co/active_storage/sfx/2575/2575-preview.mp3" preload="auto"></audio>
+  <audio id="sfx-countdown" src="https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3" preload="auto"></audio>
+  <audio id="bgm-loop" src="bgm.mp3" loop preload="auto"></audio>
 
   <div class="bg-layer"></div>
   <div class="batik-overlay"></div>
@@ -45,6 +44,7 @@
 
   <!-- ════════════════ PAGE: LEADERBOARD ════════════════ -->
   <div id="page-leaderboard" class="page">
+   <div class="lb169-wrap">
     <header class="site-header">
       <div class="header-ornament top-left"></div>
       <div class="header-ornament top-right"></div>
@@ -100,6 +100,7 @@
     <footer class="site-footer">
       <p>Diperbarui: <span id="last-update">—</span> &nbsp;|&nbsp; <span id="total-peserta">0</span> Peserta Terdaftar &nbsp;|&nbsp; <span id="status-event">Menunggu Mulai</span></p>
     </footer>
+   </div><!-- /.lb169-wrap -->
 
     <div class="rank-toast" id="rank-toast">
       <span id="rank-toast-icon">⬆️</span>
@@ -127,6 +128,7 @@
         <h1 class="header-title mobile-title">📋 Peserta</h1>
       </div>
       <div class="header-controls">
+        <button class="ctrl-btn" onclick="showVoting()" title="Voting Lomba Favorit">🗳️</button>
         <button class="ctrl-btn" onclick="showHelp('peserta')" title="Bantuan">❓</button>
       </div>
     </header>
@@ -167,7 +169,7 @@
             </div>
             <div class="form-group">
               <label>Kelas</label>
-              <input type="text" id="daftar-kelas" placeholder="Contoh: X IPA 1" autocomplete="off" />
+              <input type="text" id="daftar-kelas" placeholder="Contoh: 8G" autocomplete="off" />
             </div>
             <div class="form-group">
               <label>Username (harus diawali "peserta")</label>
@@ -345,6 +347,18 @@
             </div>
             <p class="hint">Saat event dimulai, leaderboard countdown 3-2-1 lalu timer berjalan. Panitia hanya bisa scan selama timer aktif.</p>
           </div>
+          <div class="admin-card">
+            <h3>🗳️ Hasil Voting Lomba Favorit</h3>
+            <p class="hint">Peserta bisa vote lomba favorit setelah waktu habis. Klik tombol di bawah untuk menampilkan hasil voting di layar leaderboard.</p>
+            <div class="vote-admin-preview" id="vote-admin-preview">Belum ada data voting.</div>
+            <div style="display:flex;gap:.7rem;flex-wrap:wrap;margin-top:.8rem">
+              <button class="btn-primary" onclick="showVotingResult()">📊 Tampilkan Hasil di Leaderboard</button>
+              <button class="btn-secondary" onclick="hideVotingResult()">🙈 Sembunyikan</button>
+              <button class="btn-secondary" onclick="exportVoteCSV()">📥 Export Detail (CSV)</button>
+              <button class="btn-secondary" onclick="exportVoteRekapCSV()">📥 Export Rekap (CSV)</button>
+              <button class="btn-danger" onclick="resetVoting()">🗑️ Reset Voting</button>
+            </div>
+          </div>
         </div>
 
         <!-- TAB PESERTA -->
@@ -422,6 +436,29 @@
         </div>
 
       </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ MODAL VOTING (peserta) ════════════════ -->
+  <div class="help-overlay" id="vote-overlay" style="display:none" onclick="closeVoting(event)">
+    <div class="help-box">
+      <button class="help-close" onclick="closeVoting()">✕</button>
+      <div class="help-icon">🗳️</div>
+      <h2 class="help-title">Vote Lomba Favorit</h2>
+      <div class="vote-body" id="vote-body">
+        <!-- Diisi JS: daftar lomba yang diikuti peserta -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ CARD HASIL VOTING (leaderboard) ════════════════ -->
+  <div class="vote-result-overlay" id="vote-result-overlay" style="display:none">
+    <div class="vote-result-card">
+      <div class="vote-result-ribbon">⭐ LOMBA TERFAVORIT ⭐</div>
+      <div class="vote-result-trophy">🏆</div>
+      <h2 class="vote-result-name" id="vote-result-name">—</h2>
+      <p class="vote-result-count" id="vote-result-count">0 suara</p>
+      <div class="vote-result-sparkle">✦ ✦ ✦</div>
     </div>
   </div>
 
