@@ -482,3 +482,82 @@ input:focus,select:focus { outline:none; border-color:var(--gold); box-shadow:0 
 
 /* Particle logo (background) */
 .particle-logo { display:flex; align-items:center; justify-content:center; }
+
+/* ================================================================
+   MODE 16:9 PAKSA — khusus halaman LEADERBOARD (untuk videotron)
+   ================================================================ */
+#page-leaderboard {
+  position:fixed; inset:0;
+  width:100vw; height:100vh; min-height:0;
+  display:flex; align-items:center; justify-content:center;
+  background:#000; overflow:hidden;
+}
+/* Kotak 16:9 di tengah: selebar mungkin tapi tidak melebihi tinggi layar */
+.lb169-wrap {
+  width:min(100vw, calc(100vh * 16 / 9));
+  height:min(100vh, calc(100vw * 9 / 16));
+  display:flex; flex-direction:column;
+  overflow:hidden; position:relative;
+  box-shadow:0 0 80px rgba(0,0,0,.8);
+}
+.lb169-wrap .leaderboard-stage { flex:1; min-height:0; max-height:none; }
+.lb169-wrap .site-header,
+.lb169-wrap .site-footer { flex-shrink:0; }
+
+/* ================================================================
+   VOTING — modal peserta & card hasil di leaderboard
+   ================================================================ */
+
+/* Info teks di modal voting */
+.vote-info { font-family:var(--font-ui); font-size:.85rem; color:var(--cream); line-height:1.6; text-align:center; margin-bottom:1rem; }
+
+/* Grid pilihan lomba */
+.vote-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
+.vote-opt {
+  padding:.7rem .5rem; border-radius:10px; cursor:pointer;
+  font-family:var(--font-ui); font-size:.78rem; font-weight:600;
+  background:rgba(245,200,66,.12); border:1.5px solid var(--gold-dark); color:var(--cream);
+  transition:all var(--dur-fast); box-shadow:0 3px 0 rgba(0,0,0,.3);
+}
+.vote-opt:hover:not(.locked) { background:rgba(245,200,66,.28); border-color:var(--gold); color:var(--gold); transform:translateY(-2px); box-shadow:0 5px 0 rgba(0,0,0,.3); }
+.vote-opt.locked { opacity:.4; cursor:not-allowed; background:rgba(255,255,255,.04); border-color:rgba(255,255,255,.15); }
+
+/* Preview hasil voting di admin */
+.vote-admin-preview { font-family:var(--font-ui); font-size:.85rem; color:var(--cream); background:rgba(255,255,255,.05); border:1px solid var(--gold-dark); border-radius:10px; padding:.9rem 1rem; line-height:1.6; }
+
+/* ── Card hasil voting di leaderboard (pop-up tengah) ── */
+.vote-result-overlay {
+  position:fixed; inset:0; z-index:480;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(14,6,0,.85); backdrop-filter:blur(10px);
+}
+.vote-result-card {
+  position:relative; text-align:center;
+  padding:3rem 3.5rem 2.5rem;
+  background:linear-gradient(160deg,#3D1A00,#1A0800);
+  border:3px solid var(--gold); border-radius:24px;
+  box-shadow:0 24px 70px rgba(0,0,0,.9),0 0 60px rgba(245,200,66,.35);
+  animation:votePop .7s var(--ease-bounce) both;
+  max-width:90vw;
+}
+@keyframes votePop {
+  0%   { transform:scale(0.5) rotate(-8deg); opacity:0; }
+  60%  { transform:scale(1.08) rotate(3deg); opacity:1; }
+  100% { transform:scale(1) rotate(0); opacity:1; }
+}
+.vote-result-ribbon {
+  position:absolute; top:-16px; left:50%; transform:translateX(-50%);
+  background:linear-gradient(135deg,var(--gold),var(--gold-dark));
+  color:var(--ink); font-family:var(--font-ui); font-weight:700;
+  font-size:.78rem; letter-spacing:.15em; padding:.4rem 1.4rem;
+  border-radius:20px; white-space:nowrap;
+  box-shadow:0 4px 14px rgba(0,0,0,.5);
+}
+.vote-result-trophy { font-size:4.5rem; filter:drop-shadow(0 0 24px var(--gold)); animation:crownBob 2s ease-in-out infinite; margin-bottom:.3rem; }
+.vote-result-name {
+  font-family:var(--font-display); font-size:clamp(1.6rem,4vw,2.6rem);
+  color:var(--gold-light); text-shadow:0 0 24px var(--gold),2px 2px 0 var(--gold-dark);
+  margin-bottom:.4rem; letter-spacing:.05em;
+}
+.vote-result-count { font-family:var(--font-ui); font-size:1rem; color:var(--cream); margin-bottom:.6rem; }
+.vote-result-sparkle { font-size:1.2rem; color:var(--gold); letter-spacing:.5em; animation:pulse 1.8s ease-in-out infinite; }
