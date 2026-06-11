@@ -475,8 +475,7 @@ function jalankanCountdown321() {
       // "MULAI!"
       num.textContent='MULAI!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
-      playSound('sfx-confetti'); // bunyi semangat untuk MULAI
-      fireConfetti();
+      fireConfetti();            // confetti visual saja (tanpa suara)
       playBGM();                 // BGM mulai pas GO! (hanya bunyi jika musik tidak di-mute)
     } else {
       clearInterval(iv);
@@ -1086,17 +1085,25 @@ function toggleMusic(){
 }
 
 /**
- * "Unlock" audio dengan memutar lalu langsung pause saat ada interaksi user.
- * Ini bikin browser mengizinkan audio diputar otomatis nanti (pas GO!).
+ * "Unlock" + "hangatkan" semua audio saat ada interaksi user.
+ * Memutar tiap audio sebentar (volume 0) lalu pause → browser memuat
+ * file ke memori, sehingga saat dibutuhkan (countdown) langsung bunyi tanpa delay.
  */
 function unlockAudio(){
-  const b=document.getElementById('bgm-loop');
-  if(!b || STATE._audioUnlocked) return;
-  b.volume=0;
-  b.play().then(()=>{
-    b.pause(); b.currentTime=0; b.volume=0.15;
-    STATE._audioUnlocked=true;
-  }).catch(()=>{});
+  if (STATE._audioUnlocked) return;
+  STATE._audioUnlocked = true;
+
+  // Hangatkan semua elemen audio sekaligus
+  const ids = ['bgm-loop','sfx-countdown','sfx-confetti','sfx-rank-up','sfx-rank-down','sfx-scan-ok','sfx-scan-err'];
+  ids.forEach(id => {
+    const a = document.getElementById(id);
+    if (!a) return;
+    const volAsli = (id==='bgm-loop') ? 0.15 : 0.5;
+    a.volume = 0;
+    a.play().then(() => {
+      a.pause(); a.currentTime = 0; a.volume = volAsli;
+    }).catch(()=>{});
+  });
 }
 
 /** Mulai putar BGM (hanya jika musik dalam keadaan ON / tidak di-mute) */
