@@ -38,7 +38,7 @@ const CONFIG = {
   musicAutoplay : false,
 
   // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "91660289a3378364ccc77d619b316dbc",
+  imgbbApiKey : "GANTI_DENGAN_API_KEY_IMGBB",
 
   // Daftar 12 lomba
   daftarLomba : [
@@ -323,7 +323,6 @@ function startLocalTimerTick() {
     if (STATE.eventEndAt && Date.now() >= STATE.eventEndAt) {
       STATE.eventStatus = 'ended';
       clearInterval(STATE.timerInterval);
-      playSound('sfx-timeup');
       const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
       if (page==='leaderboard') updateLeaderboardTimer();
       if (page==='panitia')     updatePanitiaStatus();
@@ -357,6 +356,7 @@ function renderTimerText() {
 async function mulaiEvent() {
   const menit = parseInt(document.getElementById('timer-durasi')?.value) || 60;
   const endAt = Date.now() + menit*60*1000;
+  STATE._timeupPlayed = false;  // reset agar suara selesai bisa bunyi lagi
   await db.collection('event').doc('status').set({
     status:'running', endAt, startedAt: Date.now(), durasiMenit: menit,
   });
@@ -474,7 +474,7 @@ function jalankanCountdown321() {
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
     } else if (n===0) {
       // "MULAI!"
-      num.textContent='GO!';
+      num.textContent='MULAI!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       fireConfetti();            // confetti visual saja (tanpa suara)
       playBGM();                 // BGM mulai pas GO! (hanya bunyi jika musik tidak di-mute)
@@ -1095,7 +1095,7 @@ function unlockAudio(){
   STATE._audioUnlocked = true;
 
   // Hangatkan semua elemen audio sekaligus
-  const ids = ['bgm-loop','sfx-countdown','sfx-confetti','sfx-rank-up','sfx-rank-down','sfx-scan-ok','sfx-scan-err'];
+  const ids = ['bgm-loop','sfx-countdown','sfx-confetti','sfx-rank-up','sfx-rank-down','sfx-scan-ok','sfx-scan-err','sfx-timeup'];
   ids.forEach(id => {
     const a = document.getElementById(id);
     if (!a) return;
