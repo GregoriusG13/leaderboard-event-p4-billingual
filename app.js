@@ -473,7 +473,7 @@ function jalankanCountdown321() {
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
     } else if (n===0) {
       // "MULAI!"
-      num.textContent='MULAI!';
+      num.textContent='GO!';
       num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
       fireConfetti();            // confetti visual saja (tanpa suara)
       playBGM();                 // BGM mulai pas GO! (hanya bunyi jika musik tidak di-mute)
