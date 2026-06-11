@@ -323,6 +323,7 @@ function startLocalTimerTick() {
     if (STATE.eventEndAt && Date.now() >= STATE.eventEndAt) {
       STATE.eventStatus = 'ended';
       clearInterval(STATE.timerInterval);
+      playSound('sfx-timeup');
       const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
       if (page==='leaderboard') updateLeaderboardTimer();
       if (page==='panitia')     updatePanitiaStatus();
