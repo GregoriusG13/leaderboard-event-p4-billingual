@@ -437,8 +437,12 @@ function updateLeaderboardTimer() {
     if (ov) ov.style.display='none';
     if (timerDisplay) timerDisplay.style.display='flex';
     if (statusEvent)  statusEvent.textContent='🔴 Ditutup';
-    // Tampilkan toast info sekali
-    if (!STATE._endToastShown) { STATE._endToastShown=true; showToast('🏁 Event selesai! Leaderboard final ditampilkan.'); }
+    // Tampilkan toast info + bunyikan suara selesai (sekali)
+    if (!STATE._endToastShown) {
+      STATE._endToastShown=true;
+      showToast('🏁 Event selesai! Leaderboard final ditampilkan.');
+      playSound('sfx-timeup');   // suara penanda waktu habis
+    }
   } else {
     showStatusOverlay('⏳','Menunggu Dimulai','Leaderboard belum dibuka oleh admin');
     if (timerDisplay) timerDisplay.style.display='none';
