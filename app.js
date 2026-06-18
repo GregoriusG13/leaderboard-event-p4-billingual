@@ -266,12 +266,28 @@ async function resetSemuaScore() {
 }
 
 function hitungSkor(mode) {
-  const log=getAllLog().filter(l=>l.mode===mode), peserta=getAllPeserta(), map={};
-  log.forEach(l=>map[l.pesertaId]=(map[l.pesertaId]||0)+1);
+  const log=getAllLog().filter(l=>l.mode===mode), peserta=getAllPeserta();
+  const map={};        // pesertaId → jumlah skor
+  const lastTime={};   // pesertaId → waktu (ms) scan TERAKHIR (kapan capai skor sekarang)
+
+  log.forEach(l=>{
+    map[l.pesertaId]=(map[l.pesertaId]||0)+1;
+    // Catat waktu scan paling akhir untuk peserta ini
+    const t = toMillis(l.waktu);
+    if (!lastTime[l.pesertaId] || t > lastTime[l.pesertaId]) lastTime[l.pesertaId]=t;
+  });
+
   return peserta.filter(p=>(map[p.id]||0)>0)
-    .map(p=>({nama:p.nama,kelas:p.kelas,foto:p.foto,skor:map[p.id]||0}))
-    .sort((a,b)=>b.skor-a.skor).slice(0,CONFIG.topN);
+    .map(p=>({ nama:p.nama, kelas:p.kelas, foto:p.foto, skor:map[p.id]||0, _t:lastTime[p.id]||0 }))
+    .sort((a,b)=>{
+      // Skor lebih besar di atas
+      if (b.skor !== a.skor) return b.skor - a.skor;
+      // Skor sama → yang LEBIH DULU mencapai skor itu di atas (waktu terakhir lebih kecil)
+      return a._t - b._t;
+    })
+    .slice(0,CONFIG.topN);
 }
+
 function getPoinPeserta(id) {
   const log=getAllLog().filter(l=>l.pesertaId===id);
   return { jawara:log.filter(l=>l.mode==='jawara').length, penjelajah:log.filter(l=>l.mode==='penjelajah').length };
