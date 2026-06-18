@@ -1,1217 +1,563 @@
-/**
- * ================================================================
- * PAPAN JUARA — app.js (Firebase + Timer + Login Peserta)
- * ================================================================
- *   BAGIAN 1  — Konfigurasi (EDIT DI SINI)
- *   BAGIAN 2  — State
- *   BAGIAN 3  — Router
- *   BAGIAN 4  — Config persisten
- *   BAGIAN 5  — Auth admin
- *   BAGIAN 6  — Data peserta (Firestore) + login/logout
- *   BAGIAN 7  — Score log & poin
- *   BAGIAN 8  — TIMER EVENT (Firestore, sinkron semua device)
- *   BAGIAN 9  — Leaderboard render
- *   BAGIAN 10 — Rank change
- *   BAGIAN 11 — Halaman peserta
- *   BAGIAN 12 — Halaman panitia
- *   BAGIAN 13 — Admin panel
- *   BAGIAN 14 — Audio & efek
- *   BAGIAN 15 — Utilitas
- *   BAGIAN 16 — Modal bantuan (auto-show sekali per device)
- *
- *   `db` didefinisikan di index.html (Firebase).
- * ================================================================
- */
-
 /* ================================================================
-   BAGIAN 1 — KONFIGURASI
-   ================================================================ */
-const CONFIG = {
-  eventTitle  : "NAMA EVENT",
-  eventTagline: "Tagline Event · Tahun",
-  topN : 10,
-
-  // Admin — WAJIB GANTI sebelum deploy!
-  adminUser : "admin",
-  adminPass : "papanjuara2025",
-
-  musicAutoplay : false,
-
-  // ImgBB API key (foto). Dapatkan di https://api.imgbb.com
-  imgbbApiKey : "91660289a3378364ccc77d619b316dbc",
-
-  // Daftar 12 lomba
-  daftarLomba : [
-    "Congklak", "Bentengan", "Sipak Rago", "Boi-boian",
-    "Klek Engklek", "Golong-golong", "Dam-daman", "Marble Action",
-    "Kelereng Billiard", "Bola Bekel 3000", "Lucky Compass", "Ketapel",
-  ],
-};
-
-/* ================================================================
-   BAGIAN 2 — STATE
-   ================================================================ */
-const STATE = {
-  jawara:[], penjelajah:[], prevJawara:[], prevPenjelajah:[],
-  musicOn: true,
-  _audioUnlocked:false,
-  lombaAktif:null, modeAktif:null, qrScanner:null, scanLog:[],
-  pesertaAktif:null,
-  cachePeserta:[], cacheLog:[], cacheVote:[],
-  unsubPeserta:null, unsubLog:null, unsubTimer:null, unsubVote:null, unsubVoteDisplay:null,
-  // Timer
-  eventStatus:'idle',  // 'idle' | 'running' | 'ended'
-  eventEndAt:null,     // timestamp (ms) kapan event berakhir
-  eventStartedAt:null, // timestamp (ms) kapan event dimulai
-  timerInterval:null,
-  countdownDone:false, // sudah tampilkan animasi 3-2-1?
-  _lastCountdownEndAt:null, // endAt terakhir yang sudah ditampilkan countdown-nya
-  _endToastShown:false,     // sudah tampilkan toast "event selesai"?
-  _voteAutoOpened:false,    // sudah auto-buka voting di peserta?
-};
-
-/* ================================================================
-   BAGIAN 3 — ROUTER
-   ================================================================ */
-function router() {
-  const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
-  document.querySelectorAll('.page').forEach(p => p.style.display='none');
-  const el = document.getElementById(`page-${page}`);
-  if (el) el.style.display='block';
-  switch(page) {
-    case 'leaderboard': initLeaderboard(); break;
-    case 'peserta':     initPeserta();     break;
-    case 'panitia':     initPanitia();     break;
-    case 'admin':       initAdmin();       break;
-  }
-}
-document.addEventListener('DOMContentLoaded', () => {
-  loadConfig(); spawnParticles(); listenTimer(); router();
-});
-
-/* ================================================================
-   BAGIAN 4 — CONFIG PERSISTEN
-   ================================================================ */
-function loadConfig() {
-  const s = localStorage.getItem('papanJuaraConfig');
-  if (s) Object.assign(CONFIG, JSON.parse(s));
-  const t=document.getElementById('event-title'), g=document.getElementById('event-tagline');
-  if (t) t.textContent=CONFIG.eventTitle;
-  if (g) g.textContent=CONFIG.eventTagline;
-}
-function saveConfig() {
-  CONFIG.eventTitle   = document.getElementById('cfg-title')?.value   || CONFIG.eventTitle;
-  CONFIG.eventTagline = document.getElementById('cfg-tagline')?.value || CONFIG.eventTagline;
-  localStorage.setItem('papanJuaraConfig', JSON.stringify(CONFIG));
-  showToast('✅ Pengaturan disimpan!');
-}
-function populateConfigForm() {
-  const t=document.getElementById('cfg-title'), g=document.getElementById('cfg-tagline');
-  if (t) t.value=CONFIG.eventTitle; if (g) g.value=CONFIG.eventTagline;
-}
-
-/* ================================================================
-   BAGIAN 5 — AUTH ADMIN
-   ================================================================ */
-function initAdmin() { checkAdminSession(); populateConfigForm(); }
-function doLogin() {
-  const u=document.getElementById('inp-user')?.value.trim(), p=document.getElementById('inp-pass')?.value;
-  const e=document.getElementById('login-error');
-  if (u===CONFIG.adminUser && p===CONFIG.adminPass) { sessionStorage.setItem('adminLoggedIn','true'); showAdminPanel(); }
-  else { if(e) e.textContent='❌ Username atau password salah!';
-    const b=document.querySelector('.login-box'); if(b){b.style.animation='none';setTimeout(()=>b.style.animation='shake .4s ease',10);} }
-}
-function checkAdminSession() { if (sessionStorage.getItem('adminLoggedIn')==='true') showAdminPanel(); }
-function showAdminPanel() {
-  document.getElementById('login-overlay').style.display='none';
-  document.getElementById('admin-panel').style.display='block';
-  populateLombaFilter(); generateAdminQR();
-  listenPeserta(()=>renderPesertaTable());
-  listenLog(()=>{ renderPesertaTable(); renderLogTable(); });
-  listenVote(()=>updateVoteAdminPreview());
-  updateAdminTimerUI();
-}
-function doLogout() { sessionStorage.removeItem('adminLoggedIn'); location.reload(); }
-
-/* ================================================================
-   BAGIAN 6 — DATA PESERTA + LOGIN/LOGOUT
-   Collection "peserta": { nama, kelas, username, password, foto, createdAt }
-   ================================================================ */
-function listenPeserta(cb) {
-  if (STATE.unsubPeserta) STATE.unsubPeserta();
-  STATE.unsubPeserta = db.collection('peserta').onSnapshot(snap => {
-    STATE.cachePeserta = snap.docs.map(d=>({id:d.id,...d.data()}));
-    if (cb) cb();
-  }, err=>console.error('[FS peserta]',err));
-}
-function getAllPeserta() { return STATE.cachePeserta; }
-
-/**
- * Daftar peserta baru.
- * Validasi: username harus diawali "peserta", unik, password min 4.
- * @returns {Promise<{ok:boolean, msg?:string, peserta?:object}>}
- */
-async function registerPeserta(nama, kelas, username, password) {
-  username = username.trim();
-  nama = nama.trim();
-  // Validasi nickname harus diakhiri "Fam"
-  if (!nama.toLowerCase().endsWith('fam'))
-    return { ok:false, msg:'Nickname harus diakhiri kata "Fam"' };
-  // Validasi username diawali "peserta"
-  if (!username.toLowerCase().startsWith('peserta'))
-    return { ok:false, msg:'Username harus diawali kata "peserta"' };
-  if (password.length < 4)
-    return { ok:false, msg:'Password minimal 4 karakter' };
-
-  // Cek username unik
-  const dup = await db.collection('peserta').where('username','==',username).get();
-  if (!dup.empty) return { ok:false, msg:'Username sudah dipakai, pilih yang lain' };
-
-  const data = {
-    nama, kelas: kelas.trim(), username, password,
-    foto:'', createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-  };
-  const ref = await db.collection('peserta').add(data);
-  return { ok:true, peserta:{ id:ref.id, ...data } };
-}
-
-/**
- * Login peserta dengan username + password.
- * @returns {Promise<{ok:boolean, msg?:string, peserta?:object}>}
- */
-async function authPeserta(username, password) {
-  const snap = await db.collection('peserta')
-    .where('username','==',username.trim())
-    .where('password','==',password)
-    .get();
-  if (snap.empty) return { ok:false, msg:'Username atau password salah' };
-  const doc = snap.docs[0];
-  return { ok:true, peserta:{ id:doc.id, ...doc.data() } };
-}
-
-async function hapusPeserta(id) {
-  if (!confirm('⚠️ Hapus peserta ini? Semua score-nya juga dihapus!')) return;
-  await db.collection('peserta').doc(id).delete();
-  const logs = await db.collection('log').where('pesertaId','==',id).get();
-  const batch = db.batch(); logs.forEach(d=>batch.delete(d.ref)); await batch.commit();
-  showToast('🗑️ Peserta dihapus');
-}
-
-/**
- * Admin ubah password peserta (kalau lupa)
- */
-async function ubahPasswordPeserta(id, namaPeserta) {
-  const baru = prompt(`Password baru untuk ${namaPeserta}:`);
-  if (!baru) return;
-  if (baru.length < 4) { alert('Password minimal 4 karakter'); return; }
-  await db.collection('peserta').doc(id).update({ password: baru });
-  showToast('✅ Password diperbarui');
-}
-
-/** Upload foto via ImgBB → simpan URL ke Firestore */
-async function updateFotoPeserta(id, fotoBlob) {
-  const fd = new FormData(); fd.append('image', fotoBlob);
-  const res = await fetch(`https://api.imgbb.com/1/upload?key=${CONFIG.imgbbApiKey}`, { method:'POST', body:fd });
-  const data = await res.json();
-  if (!data.success) throw new Error('Upload ImgBB gagal');
-  const url = data.data.url;
-  await db.collection('peserta').doc(id).update({ foto:url });
-  return url;
-}
-
-async function resetSemuaPeserta() {
-  if (!confirm('⚠️ Hapus SEMUA peserta dan score?')) return;
-  showToast('⏳ Menghapus...'); await deleteCollection('peserta'); await deleteCollection('log');
-  showToast('🗑️ Semua data dihapus');
-}
-
-/* ================================================================
-   BAGIAN 7 — SCORE LOG & POIN
-   ================================================================ */
-function listenLog(cb) {
-  if (STATE.unsubLog) STATE.unsubLog();
-  STATE.unsubLog = db.collection('log').onSnapshot(snap => {
-    STATE.cacheLog = snap.docs.map(d=>({id:d.id,...d.data()}));
-    if (cb) cb();
-  }, err=>console.error('[FS log]',err));
-}
-function getAllLog() { return STATE.cacheLog; }
-
-async function tambahScore(pesertaId, lomba, mode) {
-  // BLOKIR jika event tidak sedang berjalan
-  if (STATE.eventStatus !== 'running') return 'event_tutup';
-
-  const doc = await db.collection('peserta').doc(pesertaId).get();
-  if (!doc.exists) return 'tidak_ditemukan';
-  const peserta = doc.data();
-
-  const dup = await db.collection('log')
-    .where('pesertaId','==',pesertaId).where('lomba','==',lomba).where('mode','==',mode).get();
-  if (!dup.empty) return 'duplikat';
-
-  await db.collection('log').add({
-    pesertaId, nama:peserta.nama, kelas:peserta.kelas, lomba, mode,
-    waktu: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-  return 'ok';
-}
-
-async function hapusLog(logId) {
-  if (!confirm('Hapus entry ini?')) return;
-  await db.collection('log').doc(logId).delete(); showToast('🗑️ Entry dihapus');
-}
-async function resetSemuaScore() {
-  if (!confirm('⚠️ Reset SEMUA score?')) return;
-  showToast('⏳ Mereset...'); await deleteCollection('log'); showToast('🗑️ Score direset');
-}
-
-function hitungSkor(mode) {
-  const log=getAllLog().filter(l=>l.mode===mode), peserta=getAllPeserta(), map={};
-  log.forEach(l=>map[l.pesertaId]=(map[l.pesertaId]||0)+1);
-  return peserta.filter(p=>(map[p.id]||0)>0)
-    .map(p=>({nama:p.nama,kelas:p.kelas,foto:p.foto,skor:map[p.id]||0}))
-    .sort((a,b)=>b.skor-a.skor).slice(0,CONFIG.topN);
-}
-function getPoinPeserta(id) {
-  const log=getAllLog().filter(l=>l.pesertaId===id);
-  return { jawara:log.filter(l=>l.mode==='jawara').length, penjelajah:log.filter(l=>l.mode==='penjelajah').length };
-}
-
-/* ================================================================
-   BAGIAN 8 — TIMER EVENT (Firestore: doc "event/status")
-   Struktur: { status:'idle'|'running'|'ended', endAt: <ms>, startedAt: <ms> }
+   PAPAN JUARA — style.css (Plan B)
+   Desain: Nuansa Permainan Tradisional Indonesia
    ================================================================ */
 
-/** Listen status timer realtime dari Firestore */
-function listenTimer() {
-  if (STATE.unsubTimer) STATE.unsubTimer();
-  STATE.unsubTimer = db.collection('event').doc('status').onSnapshot(doc => {
-    if (!doc.exists) { STATE.eventStatus='idle'; STATE.eventEndAt=null; }
-    else {
-      const d = doc.data();
-      STATE.eventStatus = d.status || 'idle';
-      STATE.eventEndAt  = d.endAt || null;
-      STATE.eventStartedAt = d.startedAt || null;
-    }
-    onTimerUpdate();
-  }, err=>console.error('[FS timer]',err));
+:root {
+  --gold:        #F5C842;
+  --gold-light:  #FFE68A;
+  --gold-dark:   #B8860B;
+  --crimson:     #9B1B30;
+  --crimson-dark:#6B0F20;
+  --teak:        #5C3D1E;
+  --teak-light:  #8B6340;
+  --jade:        #1A6B4A;
+  --jade-light:  #2D9E6F;
+  --cream:       #FDF3DC;
+  --cream-dark:  #EDD9A3;
+  --ink:         #1A1008;
+  --grad-jawara:    linear-gradient(160deg, #3D1A00 0%, #6B2C00 40%, #3D1A00 100%);
+  --grad-penjelajah:linear-gradient(160deg, #0A2B1A 0%, #1A5C35 40%, #0A2B1A 100%);
+  --grad-header:    linear-gradient(180deg, #1A0800 0%, #3D1800 100%);
+  --shadow-gold: 0 0 24px rgba(245,200,66,0.5);
+  --shadow-card: 0 12px 40px rgba(0,0,0,0.6);
+  --shadow-3d:   0 8px 0 rgba(0,0,0,0.5), 0 12px 20px rgba(0,0,0,0.4);
+  --font-display: 'Cinzel Decorative', serif;
+  --font-body:    'Noto Serif', serif;
+  --font-ui:      'Reem Kufi', sans-serif;
+  --ease-bounce:  cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-smooth:  cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 200ms; --dur-med: 400ms; --dur-slow: 700ms;
 }
 
-/** Dipanggil setiap status timer berubah */
-function onTimerUpdate() {
-  // Update tampilan sesuai halaman
-  const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width:100%; min-height:100%; overflow-x:hidden; background:#0E0600; color:var(--cream); font-family:var(--font-body); }
 
-  // Auto-end jika waktu sudah lewat
-  if (STATE.eventStatus==='running' && STATE.eventEndAt && Date.now() >= STATE.eventEndAt) {
-    // Tandai berakhir (hanya admin yang menulis, tapi semua bisa anggap ended lokal)
-    STATE.eventStatus = 'ended';
-  }
-
-  if (page==='leaderboard') updateLeaderboardTimer();
-  if (page==='panitia')     updatePanitiaStatus();
-  if (page==='admin')       updateAdminTimerUI();
-
-   // Di halaman peserta: saat event baru saja berakhir, otomatis buka modal voting
-  if (page==='peserta' && STATE.eventStatus==='ended' && !STATE._voteAutoOpened && STATE.pesertaAktif) {
-    STATE._voteAutoOpened = true;
-    setTimeout(() => showVoting(), 600);
-  }
-  if (STATE.eventStatus==='running') STATE._voteAutoOpened = false;
-
-  // Jalankan interval lokal untuk hitung mundur tampilan
-  startLocalTimerTick();
+.bg-layer { position:fixed; inset:0; z-index:0; background:radial-gradient(ellipse at 30% 20%, #3D1200 0%, #0E0600 60%); }
+.batik-overlay {
+  position:fixed; inset:0; z-index:1; opacity:.07;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Cpath d='M0 40 Q20 0 40 40 Q60 80 80 40' stroke='%23F5C842' stroke-width='1.5' fill='none'/%3E%3Cpath d='M0 80 Q20 40 40 80' stroke='%23F5C842' stroke-width='1.5' fill='none'/%3E%3Cpath d='M40 0 Q60 40 80 0' stroke='%23F5C842' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");
+  background-size:80px 80px;
+}
+.particles { position:fixed; inset:0; z-index:2; pointer-events:none; }
+.particle { position:absolute; font-size:1.4rem; opacity:0; animation:floatParticle linear infinite; }
+@keyframes floatParticle {
+  0%   { transform:translateY(110vh) rotate(0deg); opacity:0; }
+  10%  { opacity:.6; } 90% { opacity:.4; }
+  100% { transform:translateY(-10vh) rotate(360deg); opacity:0; }
 }
 
-/** Interval lokal untuk update angka countdown tiap detik */
-function startLocalTimerTick() {
-  if (STATE.timerInterval) clearInterval(STATE.timerInterval);
-  if (STATE.eventStatus !== 'running') { renderTimerText(); return; }
-  STATE.timerInterval = setInterval(() => {
-    if (STATE.eventEndAt && Date.now() >= STATE.eventEndAt) {
-      STATE.eventStatus = 'ended';
-      clearInterval(STATE.timerInterval);
-      const page = new URLSearchParams(location.search).get('page') || 'leaderboard';
-      if (page==='leaderboard') updateLeaderboardTimer();
-      if (page==='panitia')     updatePanitiaStatus();
-      if (page==='admin')       updateAdminTimerUI();
-    }
-    renderTimerText();
-  }, 1000);
-  renderTimerText();
+/* PAGE SYSTEM */
+.page { position:relative; z-index:5; min-height:100vh; }
+
+/* ── HEADER ── */
+.site-header {
+  position:relative; z-index:10;
+  background:var(--grad-header);
+  border-bottom:3px solid var(--gold-dark);
+  padding:.6rem 2rem;
+  box-shadow:0 4px 30px rgba(0,0,0,.8), 0 0 60px rgba(245,200,66,.1);
 }
+.header-ornament { position:absolute; top:0; width:120px; height:100%; background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 80'%3E%3Cpath d='M0 0 Q60 40 120 0 Q80 80 0 80Z' fill='%23B8860B' opacity='0.3'/%3E%3C/svg%3E") no-repeat center/cover; }
+.header-ornament.top-left { left:0; }
+.header-ornament.top-right { right:0; transform:scaleX(-1); }
+.header-inner { display:flex; align-items:center; justify-content:center; gap:1.5rem; text-align:center; }
+.event-emblem { font-size:2.4rem; filter:drop-shadow(0 0 8px var(--gold)); }
+.header-title { font-family:var(--font-display); font-size:clamp(1.2rem,3vw,2.2rem); color:var(--gold-light); text-shadow:0 0 20px var(--gold),2px 2px 0 var(--gold-dark); letter-spacing:.1em; line-height:1.1; }
+.header-tagline { font-size:.75rem; color:var(--cream-dark); font-style:italic; margin-top:.1rem; }
+.header-controls { position:absolute; right:1.5rem; top:50%; transform:translateY(-50%); display:flex; align-items:center; gap:.5rem; }
+.ctrl-btn { display:inline-flex; align-items:center; justify-content:center; width:36px; height:36px; border-radius:50%; background:rgba(245,200,66,.15); border:1.5px solid var(--gold-dark); color:var(--gold); font-size:1rem; cursor:pointer; transition:background var(--dur-fast),transform var(--dur-fast); text-decoration:none; }
+.ctrl-btn:hover { background:rgba(245,200,66,.3); transform:scale(1.1); }
+.refresh-indicator { display:flex; align-items:center; gap:.3rem; font-family:var(--font-ui); font-size:.65rem; color:#4CAF50; }
+.refresh-dot { width:7px; height:7px; border-radius:50%; background:#4CAF50; animation:pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
 
-/** Hitung sisa waktu dalam format MM:SS */
-function sisaWaktuStr() {
-  if (!STATE.eventEndAt) return '--:--';
-  let sisa = Math.max(0, STATE.eventEndAt - Date.now());
-  const totalDetik = Math.floor(sisa/1000);
-  const m = String(Math.floor(totalDetik/60)).padStart(2,'0');
-  const s = String(totalDetik%60).padStart(2,'0');
-  return `${m}:${s}`;
-}
+/* ── LEADERBOARD STAGE ── */
+.leaderboard-stage { display:grid; grid-template-columns:1fr auto 1fr; gap:0; min-height:calc(100vw * 9/16 - 90px); max-height:calc(100vh - 100px); padding:1.2rem 1rem; overflow:hidden; }
+.board-panel { position:relative; display:flex; flex-direction:column; border-radius:16px; padding:1rem 1rem 1.2rem; overflow:hidden; box-shadow:var(--shadow-card); }
+.board-panel::before { content:''; position:absolute; inset:0; border-radius:inherit; padding:2px; background:linear-gradient(135deg,var(--gold),transparent 50%,var(--gold)); -webkit-mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); -webkit-mask-composite:xor; mask-composite:exclude; pointer-events:none; }
+.board-panel::after { content:''; position:absolute; top:0; left:0; right:0; height:40%; background:linear-gradient(180deg,rgba(255,255,255,.06) 0%,transparent 100%); border-radius:inherit; pointer-events:none; }
+.board-jawara     { background:var(--grad-jawara); }
+.board-penjelajah { background:var(--grad-penjelajah); }
+.panel-header { text-align:center; margin-bottom:.6rem; position:relative; z-index:2; }
+.panel-crown { font-size:2rem; filter:drop-shadow(0 0 10px var(--gold)); }
+.panel-title { font-family:var(--font-display); font-size:clamp(1rem,2.5vw,1.6rem); color:var(--gold-light); text-shadow:0 0 15px var(--gold),2px 3px 0 rgba(0,0,0,.6); letter-spacing:.15em; }
+.panel-divider { height:2px; background:linear-gradient(90deg,transparent,var(--gold),transparent); margin:.5rem auto 0; width:80%; box-shadow:0 0 8px var(--gold); }
+.panel-stamp { position:absolute; bottom:.6rem; right:.8rem; font-size:3rem; opacity:.06; pointer-events:none; transform:rotate(-15deg); }
 
-/** Update angka timer di header leaderboard */
-function renderTimerText() {
-  const el = document.getElementById('timer-text');
-  if (!el) return;
-  if (STATE.eventStatus==='running') el.textContent = sisaWaktuStr();
-  else if (STATE.eventStatus==='ended') el.textContent = '00:00';
-  else el.textContent = '--:--';
-}
+/* ── PODIUM ── */
+.podium-row { display:flex; justify-content:center; align-items:flex-end; gap:.5rem; margin-bottom:.8rem; position:relative; z-index:2; }
+.podium-item { display:flex; flex-direction:column; align-items:center; cursor:default; transition:transform var(--dur-med) var(--ease-bounce); animation:podiumPop var(--dur-slow) var(--ease-bounce) both; }
+.podium-item:hover { transform:translateY(-6px) scale(1.05); }
+.podium-item.rank-1 { order:2; animation-delay:.4s; }
+.podium-item.rank-2 { order:1; animation-delay:.2s; }
+.podium-item.rank-3 { order:3; animation-delay:.3s; }
+@keyframes podiumPop { 0%{opacity:0;transform:scale(.4) translateY(20px)} 70%{transform:scale(1.1) translateY(-4px)} 100%{opacity:1;transform:scale(1) translateY(0)} }
 
-/** ── ADMIN: Mulai event ── */
-async function mulaiEvent() {
-  const menit = parseInt(document.getElementById('timer-durasi')?.value) || 60;
-  const endAt = Date.now() + menit*60*1000;
-  STATE._timeupPlayed = false;  // reset agar suara selesai bisa bunyi lagi
-  await db.collection('event').doc('status').set({
-    status:'running', endAt, startedAt: Date.now(), durasiMenit: menit,
-  });
-  showToast(`▶️ Event dimulai! Durasi ${menit} menit`);
-}
-/** ── ADMIN: Stop event ── */
-async function stopEvent() {
-  if (STATE.eventStatus !== 'running') { showToast('⚠️ Tidak ada event yang sedang berjalan'); return; }
-  if (!confirm('Hentikan permainan sekarang? Scan akan ditutup & voting dibuka. Data tetap aman.')) return;
-  await db.collection('event').doc('status').set({
-    status:'ended', endAt: Date.now(), startedAt: STATE.eventStartedAt || Date.now(),
-  });
-  showToast('⏹️ Permainan dihentikan. Leaderboard final ditampilkan.');
-}
+/* Avatar podium — foto atau inisial */
+.podium-avatar { width:clamp(40px,5vw,62px); height:clamp(40px,5vw,62px); border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:clamp(1rem,2vw,1.6rem); font-weight:700; font-family:var(--font-display); color:var(--ink); position:relative; box-shadow:var(--shadow-3d); overflow:hidden; transition:box-shadow var(--dur-fast); }
+.rank-1 .podium-avatar { background:linear-gradient(135deg,#FFD700,#FFA500); box-shadow:0 6px 0 #A06000,0 8px 20px rgba(255,165,0,.6); }
+.rank-2 .podium-avatar { background:linear-gradient(135deg,#C0C0C0,#808080); box-shadow:0 6px 0 #404040,0 8px 20px rgba(192,192,192,.4); }
+.rank-3 .podium-avatar { background:linear-gradient(135deg,#CD7F32,#8B4513); box-shadow:0 6px 0 #5C2A00,0 8px 20px rgba(205,127,50,.4); }
+.rank-1 .podium-avatar::before { content:'👑'; position:absolute; top:-18px; font-size:1rem; animation:crownBob 2s ease-in-out infinite; }
+@keyframes crownBob { 0%,100%{transform:translateY(0) rotate(-5deg)} 50%{transform:translateY(-4px) rotate(5deg)} }
+.rank-1 .podium-avatar::after { content:''; position:absolute; inset:-4px; border-radius:50%; border:2px solid var(--gold); animation:glowRing 1.5s ease-in-out infinite; }
+@keyframes glowRing { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(1.15)} }
+.podium-avatar img { width:100%; height:100%; object-fit:cover; border-radius:50%; }
+.podium-name { font-family:var(--font-ui); font-size:clamp(.7rem,1.5vw,1rem); color:var(--cream); text-align:center; margin-top:.3rem; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.podium-score { font-family:var(--font-display); font-size:clamp(.75rem,1.6vw,1.05rem); color:var(--gold); }
+.podium-base { width:clamp(50px,6vw,75px); border-radius:4px 4px 0 0; display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:clamp(.9rem,1.8vw,1.1rem); font-weight:700; color:rgba(255,255,255,.7); margin-top:.3rem; box-shadow:inset 0 -4px 0 rgba(0,0,0,.3); }
+.rank-1 .podium-base { height:clamp(32px,4vw,48px); background:linear-gradient(180deg,#8B6914,#5C4000); }
+.rank-2 .podium-base { height:clamp(22px,3vw,34px); background:linear-gradient(180deg,#606060,#303030); }
+.rank-3 .podium-base { height:clamp(16px,2.5vw,26px); background:linear-gradient(180deg,#7A4A1A,#3D1F00); }
 
-/** ── ADMIN: Reset event ── */
-async function resetEvent() {
-  if (!confirm('Reset event? Timer kembali ke awal & leaderboard bisa diulang.')) return;
-  await db.collection('event').doc('status').set({ status:'idle', endAt:null, startedAt:null });
-  showToast('🔄 Event direset');
-}
+/* ── RANK LIST ── */
+.rank-list { list-style:none; display:flex; flex-direction:column; gap:.35rem; position:relative; z-index:2; flex:1; }
+.rank-item { display:grid; grid-template-columns:2rem 1fr auto; align-items:center; gap:.5rem; padding:.4rem .7rem; border-radius:8px; background:rgba(255,255,255,.06); border:1px solid rgba(245,200,66,.12); cursor:default; position:relative; overflow:hidden; box-shadow:0 4px 0 rgba(0,0,0,.4),0 6px 12px rgba(0,0,0,.3); transform:perspective(400px) rotateX(2deg); transition:transform var(--dur-med) var(--ease-bounce),box-shadow var(--dur-med),background var(--dur-fast); }
+.rank-item::before { content:''; position:absolute; top:0; left:-100%; width:60%; height:100%; background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent); transition:left .5s; }
+.rank-item:hover::before { left:150%; }
+.rank-item:hover { transform:perspective(400px) rotateX(0deg) translateY(-3px) scale(1.02); box-shadow:0 8px 0 rgba(0,0,0,.5),0 12px 24px rgba(0,0,0,.4); background:rgba(255,255,255,.12); border-color:rgba(245,200,66,.35); }
+.rank-num { font-family:var(--font-display); font-size:.75rem; color:var(--gold); text-align:center; }
+.rank-info { overflow:hidden; }
+.rank-name { font-family:var(--font-ui); font-size:clamp(1rem,2.2vw,1.5rem); color:var(--cream); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
+.rank-origin { font-size:clamp(.65rem,1.2vw,.85rem); color:var(--cream-dark); font-style:italic; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rank-score { font-family:var(--font-display); font-size:clamp(1.1rem,2.4vw,1.6rem); color:var(--gold-light); text-align:right; white-space:nowrap; text-shadow:0 0 8px var(--gold); }
+.rank-change { position:absolute; left:0; top:0; bottom:0; width:3px; border-radius:8px 0 0 8px; }
+.rank-change.up   { background:#4CAF50; box-shadow:0 0 8px #4CAF50; }
+.rank-change.down { background:#F44336; box-shadow:0 0 8px #F44336; }
+@keyframes slideInLeft  { from{opacity:0;transform:perspective(400px) rotateX(2deg) translateX(-30px)} to{opacity:1;transform:perspective(400px) rotateX(2deg) translateX(0)} }
+@keyframes slideInRight { from{opacity:0;transform:perspective(400px) rotateX(2deg) translateX(30px)}  to{opacity:1;transform:perspective(400px) rotateX(2deg) translateX(0)} }
+@keyframes rankFlash { 0%{background:rgba(245,200,66,.4)} 100%{background:rgba(255,255,255,.06)} }
+.rank-item.changed { animation:rankFlash 1.5s ease-out forwards; }
 
-/** Update UI timer di panel admin */
-function updateAdminTimerUI() {
-  const valueEl = document.getElementById('timer-status-value');
-  const cdEl    = document.getElementById('timer-countdown-big');
-  const inputRow= document.getElementById('timer-input-row');
-  const btnMulai= document.getElementById('btn-mulai-timer');
-  const btnStop = document.getElementById('btn-stop-timer');
-  if (!valueEl) return;
+/* ── CENTER DIVIDER ── */
+.center-divider { width:40px; display:flex; align-items:center; justify-content:center; position:relative; }
+.center-divider::before { content:''; position:absolute; top:0; bottom:0; left:50%; width:2px; background:linear-gradient(180deg,transparent,var(--gold),transparent); transform:translateX(-50%); box-shadow:0 0 8px var(--gold); }
+.divider-ornament { position:relative; z-index:1; background:var(--teak); border:2px solid var(--gold-dark); border-radius:50%; width:32px; height:32px; display:flex; align-items:center; justify-content:center; font-size:1rem; box-shadow:0 0 16px var(--gold-dark),var(--shadow-card); animation:spinSlow 8s linear infinite; }
+@keyframes spinSlow { to{transform:rotate(360deg)} }
 
-  if (STATE.eventStatus==='running') {
-    valueEl.textContent='🟢 Sedang Berjalan'; valueEl.style.color='#4CAF50';
-    cdEl.textContent = sisaWaktuStr();
-    if (inputRow) inputRow.style.display='none';
-    if (btnMulai) btnMulai.style.display='none';
-  } else if (STATE.eventStatus==='ended') {
-    valueEl.textContent='🔴 Selesai'; valueEl.style.color='#F44336';
-    cdEl.textContent='00:00';
-    if (inputRow) inputRow.style.display='flex';
-    if (btnMulai) { btnMulai.style.display='inline-block'; btnMulai.textContent='▶️ MULAI LAGI'; }
-  } else {
-    valueEl.textContent='⚪ Belum Dimulai'; valueEl.style.color='var(--cream-dark)';
-    cdEl.textContent='--:--';
-    if (inputRow) inputRow.style.display='flex';
-    if (btnMulai) { btnMulai.style.display='inline-block'; btnMulai.textContent='▶️ MULAI EVENT'; }
-  }
-}
+/* ── FOOTER ── */
+.site-footer { position:relative; z-index:10; text-align:center; padding:.5rem 1rem; background:rgba(0,0,0,.6); border-top:1px solid var(--gold-dark); font-family:var(--font-ui); font-size:.65rem; color:var(--cream-dark); letter-spacing:.1em; }
 
-/** Update overlay status di leaderboard + animasi 3-2-1 */
-function updateLeaderboardTimer() {
-  const statusOverlay = document.getElementById('status-overlay');
-  const timerDisplay  = document.getElementById('timer-display');
-  const statusEvent   = document.getElementById('status-event');
+/* ── RANK TOAST ── */
+.rank-toast { position:fixed; bottom:2rem; left:50%; transform:translateX(-50%) translateY(80px); background:linear-gradient(135deg,var(--teak),var(--teak-light)); border:2px solid var(--gold); border-radius:12px; padding:.7rem 1.4rem; display:flex; align-items:center; gap:.5rem; font-family:var(--font-ui); font-size:.85rem; color:var(--gold-light); box-shadow:0 8px 30px rgba(0,0,0,.7); z-index:1000; transition:transform var(--dur-slow) var(--ease-bounce),opacity var(--dur-med); opacity:0; pointer-events:none; }
+.rank-toast.show { transform:translateX(-50%) translateY(0); opacity:1; }
 
-  renderTimerText();
+/* ================================================================
+   PAGE CONTENT (non-leaderboard pages)
+   ================================================================ */
+.page-content { max-width:700px; margin:0 auto; padding:2rem 1rem; }
 
-  if (STATE.eventStatus==='running') {
-    // Tampilkan animasi 3-2-1 setiap kali ada event BARU (endAt berbeda dari yang terakhir ditampilkan)
-    // dan sisa waktu memang masih banyak (baru mulai, bukan refresh di tengah jalan)
-    const sisaMs = STATE.eventEndAt ? (STATE.eventEndAt - Date.now()) : 0;
-    const lastCd = STATE._lastCountdownEndAt;
-    const eventBaru = STATE.eventEndAt && lastCd !== STATE.eventEndAt;
+/* Card center */
+.card-center { display:flex; justify-content:center; }
+.form-card { background:linear-gradient(160deg,#2A0E00,#1A0800); border:2px solid var(--gold-dark); border-radius:20px; padding:2rem; width:min(480px,90vw); box-shadow:0 20px 60px rgba(0,0,0,.9),0 0 40px rgba(245,200,66,.1); animation:loginPop .5s var(--ease-bounce) both; }
+@keyframes loginPop { from{opacity:0;transform:scale(.8) translateY(20px)} to{opacity:1;transform:scale(1) translateY(0)} }
+.form-card-icon { font-size:3rem; text-align:center; filter:drop-shadow(0 0 16px var(--gold)); margin-bottom:.5rem; }
+.form-card-title { font-family:var(--font-display); font-size:1.3rem; color:var(--gold-light); text-align:center; margin-bottom:.2rem; }
+.form-card-sub { font-size:.78rem; color:var(--cream-dark); text-align:center; font-style:italic; margin-bottom:1.5rem; }
+.form-error { color:#F44336; font-size:.75rem; min-height:1rem; margin-bottom:.5rem; text-align:center; }
 
-    // Hitung total durasi event untuk tahu apakah ini "baru mulai"
-    // Tampilkan countdown jika event baru DAN sisa waktu > (durasi - 5 detik)
-    // Artinya kita masih di ~5 detik pertama event
-    if (eventBaru && sisaMs > 0) {
-      const startedAt = STATE.eventStartedAt || 0;
-      const detikSejakMulai = startedAt ? (Date.now() - startedAt)/1000 : 0;
-      // Hanya jalankan countdown kalau event baru dimulai (< 5 detik lalu)
-      if (detikSejakMulai < 5) {
-        STATE._lastCountdownEndAt = STATE.eventEndAt;
-        jalankanCountdown321();
-      } else {
-        // Event sudah jalan sebelum kita buka halaman → jangan countdown, langsung tampil
-        STATE._lastCountdownEndAt = STATE.eventEndAt;
-      }
-    }
-    if (statusOverlay) statusOverlay.style.display='none';
-    if (timerDisplay)  timerDisplay.style.display='flex';
-    if (statusEvent)   statusEvent.textContent='🟢 Berlangsung';
-    STATE._endToastShown=false; // reset agar toast "selesai" bisa muncul lagi nanti
-  } else if (STATE.eventStatus==='ended') {
-    // Event selesai: leaderboard TETAP terlihat, hanya tampilkan badge "Ditutup"
-    // Overlay status disembunyikan agar papan juara tetap bisa dilihat
-    const ov=document.getElementById('status-overlay');
-    if (ov) ov.style.display='none';
-    if (timerDisplay) timerDisplay.style.display='flex';
-    if (statusEvent)  statusEvent.textContent='🔴 Ditutup';
-    // Tampilkan toast info + bunyikan suara selesai (sekali)
-    if (!STATE._endToastShown) {
-      STATE._endToastShown=true;
-      showToast('🏁 Event selesai! Leaderboard final ditampilkan.');
-      playSound('sfx-timeup');   // suara penanda waktu habis
-    }
-  } else {
-    showStatusOverlay('⏳','Menunggu Dimulai','Leaderboard belum dibuka oleh admin');
-    if (timerDisplay) timerDisplay.style.display='none';
-    if (statusEvent)  statusEvent.textContent='Menunggu Mulai';
-  }
-}
+/* ── PROFIL PESERTA ── */
+.profile-card { text-align:center; }
+.profile-photo-wrap { position:relative; display:inline-block; cursor:pointer; margin-bottom:.8rem; }
+.profile-photo { width:100px; height:100px; border-radius:50%; background:linear-gradient(135deg,var(--gold),var(--gold-dark)); display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:2.5rem; color:var(--ink); border:3px solid var(--gold); box-shadow:0 0 20px var(--gold-dark),var(--shadow-3d); overflow:hidden; }
+.profile-photo-overlay { position:absolute; inset:0; border-radius:50%; background:rgba(0,0,0,.5); display:flex; align-items:center; justify-content:center; font-size:.7rem; color:#fff; opacity:0; transition:opacity var(--dur-fast); font-family:var(--font-ui); }
+.profile-photo-wrap:hover .profile-photo-overlay { opacity:1; }
+.profile-name { font-family:var(--font-display); font-size:1.2rem; color:var(--gold-light); margin-bottom:.2rem; }
+.profile-kelas { font-family:var(--font-ui); font-size:.8rem; color:var(--cream-dark); margin-bottom:1rem; }
+.profile-qr-section { margin:1rem 0; }
+.profile-qr-label { font-family:var(--font-ui); font-size:.72rem; color:var(--cream-dark); margin-bottom:.5rem; }
+#profile-qr-canvas canvas { border:4px solid var(--gold); border-radius:8px; padding:4px; background:#fff; }
+.profile-stats { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:1.2rem; }
+.stat-box { background:rgba(255,255,255,.06); border:1px solid rgba(245,200,66,.2); border-radius:10px; padding:.8rem; }
+.stat-num { font-family:var(--font-display); font-size:2rem; color:var(--gold); }
+.stat-label { font-family:var(--font-ui); font-size:.65rem; color:var(--cream-dark); margin-top:.2rem; }
 
-/** Tampilkan overlay status (idle/ended) */
-function showStatusOverlay(icon, title, msg) {
-  const ov=document.getElementById('status-overlay');
-  if (!ov) return;
-  document.getElementById('status-icon').textContent=icon;
-  document.getElementById('status-title').textContent=title;
-  document.getElementById('status-msg').textContent=msg;
-  ov.style.display='flex';
-}
+/* ================================================================
+   PANITIA PAGE
+   ================================================================ */
+.panitia-layout { display:flex; flex-direction:column; gap:1.5rem; }
+.panitia-step { background:rgba(30,10,0,.85); border:1px solid var(--gold-dark); border-radius:16px; padding:1.5rem; }
+.step-title { font-family:var(--font-display); font-size:1rem; color:var(--gold); margin-bottom:.3rem; }
+.step-sub { font-family:var(--font-ui); font-size:.8rem; color:var(--cream-dark); margin-bottom:1rem; }
 
-/** Animasi countdown 3-2-1-MULAI di leaderboard. Suara diputar SEKALI di awal. */
-function jalankanCountdown321() {
-  const ov=document.getElementById('countdown-overlay');
-  const num=document.getElementById('countdown-number');
-  if (!ov||!num) return;
-  ov.style.display='flex';
-  let n=3;
-  num.textContent=n;
-  num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
-  playSound('sfx-countdown');   // diputar SEKALI saja (file sudah berisi 3-2-1 lengkap)
-  const iv=setInterval(()=>{
-    n--;
-    if (n>0) {
-      // angka 2 dan 1 — TANPA suara lagi (biar tidak numpuk)
-      num.textContent=n;
-      num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
-    } else if (n===0) {
-      // "MULAI!"
-      num.textContent='MULAI!';
-      num.style.animation='none'; setTimeout(()=>num.style.animation='cdPop .8s ease',10);
-      fireConfetti();            // confetti visual saja (tanpa suara)
-      playBGM();                 // BGM mulai pas GO! (hanya bunyi jika musik tidak di-mute)
-    } else {
-      clearInterval(iv);
-      ov.style.display='none';
-    }
-  },1000);
+/* Grid 12 lomba */
+.lomba-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:.7rem; }
+.lomba-btn { background:rgba(255,255,255,.07); border:1.5px solid var(--gold-dark); border-radius:10px; padding:.7rem .5rem; color:var(--cream); font-family:var(--font-ui); font-size:.78rem; cursor:pointer; text-align:center; transition:all var(--dur-fast); box-shadow:0 4px 0 rgba(0,0,0,.4); }
+.lomba-btn:hover { background:rgba(245,200,66,.2); border-color:var(--gold); transform:translateY(-3px); box-shadow:0 7px 0 rgba(0,0,0,.4); color:var(--gold); }
+.lomba-btn.selected { background:rgba(245,200,66,.25); border-color:var(--gold); color:var(--gold); }
+
+/* Mode grid (Jawara / Penjelajah) */
+.mode-grid { display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-bottom:1rem; }
+.mode-btn { display:flex; flex-direction:column; align-items:center; gap:.3rem; padding:1.2rem; border-radius:14px; border:2px solid; cursor:pointer; transition:all var(--dur-med) var(--ease-bounce); box-shadow:0 6px 0 rgba(0,0,0,.5); }
+.mode-btn span { font-size:2rem; }
+.mode-btn strong { font-family:var(--font-display); font-size:.85rem; }
+.mode-btn small { font-family:var(--font-ui); font-size:.65rem; opacity:.8; }
+.mode-jawara { background:linear-gradient(135deg,#3D1A00,#6B2C00); border-color:var(--gold-dark); color:var(--gold-light); }
+.mode-jawara:hover { transform:translateY(-4px); box-shadow:0 10px 0 rgba(0,0,0,.5),var(--shadow-gold); border-color:var(--gold); }
+.mode-penjelajah { background:linear-gradient(135deg,#0A2B1A,#1A5C35); border-color:#2D9E6F; color:#A8E6CF; }
+.mode-penjelajah:hover { transform:translateY(-4px); box-shadow:0 10px 0 rgba(0,0,0,.5),0 0 20px rgba(45,158,111,.4); border-color:#4CAF50; }
+
+/* Scanner */
+.scanner-wrap { border:2px solid var(--gold-dark); border-radius:12px; overflow:hidden; margin:.8rem 0; background:#000; }
+#qr-reader { width:100% !important; }
+#qr-reader video { width:100% !important; border-radius:8px; }
+
+/* Hasil scan */
+.scan-result { text-align:center; padding:1.2rem; border-radius:12px; margin:.8rem 0; border:2px solid; animation:resultPop .4s var(--ease-bounce); }
+@keyframes resultPop { from{transform:scale(.8);opacity:0} to{transform:scale(1);opacity:1} }
+.scan-result.ok   { background:rgba(76,175,80,.15); border-color:#4CAF50; }
+.scan-result.err  { background:rgba(244,67,54,.15); border-color:#F44336; }
+.scan-result-icon { font-size:2.5rem; margin-bottom:.3rem; }
+.scan-result-name { font-family:var(--font-display); font-size:1rem; color:var(--gold-light); }
+.scan-result-msg  { font-family:var(--font-ui); font-size:.8rem; color:var(--cream-dark); margin-top:.2rem; }
+
+/* Log scan */
+.scan-log { margin-top:1rem; }
+.scan-log h4 { font-family:var(--font-ui); font-size:.78rem; color:var(--gold); margin-bottom:.5rem; }
+.scan-log ul { list-style:none; display:flex; flex-direction:column; gap:.3rem; max-height:180px; overflow-y:auto; }
+.scan-log li { font-family:var(--font-ui); font-size:.72rem; color:var(--cream-dark); padding:.3rem .6rem; background:rgba(255,255,255,.05); border-radius:6px; display:flex; justify-content:space-between; }
+
+/* ================================================================
+   ADMIN PANEL
+   ================================================================ */
+.admin-header { position:sticky; top:0; z-index:100; background:var(--grad-header); border-bottom:2px solid var(--gold-dark); padding:.8rem 2rem; display:flex; align-items:center; justify-content:space-between; box-shadow:0 4px 20px rgba(0,0,0,.8); }
+.admin-header h1 { font-family:var(--font-display); font-size:1.1rem; color:var(--gold-light); }
+.admin-header-actions { display:flex; gap:.7rem; }
+
+/* Admin tabs */
+.admin-tabs { display:flex; gap:.3rem; padding:.8rem 1.5rem .3rem; background:rgba(0,0,0,.4); border-bottom:1px solid rgba(245,200,66,.15); flex-wrap:wrap; }
+.admin-tab { font-family:var(--font-ui); font-size:.75rem; padding:.45rem .9rem; border-radius:8px 8px 0 0; background:rgba(255,255,255,.06); color:var(--cream-dark); border:1px solid rgba(255,255,255,.1); border-bottom:none; cursor:pointer; transition:all var(--dur-fast); }
+.admin-tab.active { background:rgba(245,200,66,.2); color:var(--gold); border-color:var(--gold-dark); }
+.admin-tab-content { display:none; }
+.admin-tab-content.active { display:block; }
+
+.admin-content { max-width:960px; margin:0 auto; padding:1.2rem 1rem; display:flex; flex-direction:column; gap:1rem; }
+.admin-card { background:rgba(30,10,0,.85); border:1px solid var(--gold-dark); border-radius:12px; padding:1.2rem 1.4rem; box-shadow:var(--shadow-card); }
+.admin-card h3 { font-family:var(--font-display); font-size:.9rem; color:var(--gold); margin-bottom:.8rem; padding-bottom:.5rem; border-bottom:1px solid rgba(245,200,66,.2); }
+.card-header-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.5rem; margin-bottom:.8rem; }
+.card-header-row h3 { margin-bottom:0; border-bottom:none; padding-bottom:0; }
+.filter-row { display:flex; gap:.5rem; flex-wrap:wrap; margin-bottom:.8rem; align-items:center; }
+
+/* Form */
+.form-group { display:flex; flex-direction:column; gap:.3rem; flex:1; margin-bottom:.8rem; }
+.form-row { display:flex; gap:1rem; flex-wrap:wrap; }
+label { font-family:var(--font-ui); font-size:.7rem; color:var(--cream-dark); letter-spacing:.1em; text-transform:uppercase; }
+input[type="text"],input[type="password"],input[type="number"],select { background:rgba(255,255,255,.06); border:1.5px solid var(--gold-dark); border-radius:6px; padding:.5rem .75rem; color:var(--cream); font-family:var(--font-ui); font-size:.85rem; transition:border-color var(--dur-fast),box-shadow var(--dur-fast); width:100%; }
+select option { background:#1A0800; color:var(--cream); }
+input:focus,select:focus { outline:none; border-color:var(--gold); box-shadow:0 0 0 3px rgba(245,200,66,.2); }
+.hint { font-size:.72rem; color:var(--cream-dark); font-style:italic; line-height:1.6; margin-top:.5rem; }
+
+/* Buttons */
+.btn-primary,.btn-secondary,.btn-danger,.btn-ghost { font-family:var(--font-ui); font-size:.8rem; border-radius:8px; border:none; cursor:pointer; padding:.55rem 1.2rem; transition:transform var(--dur-fast),box-shadow var(--dur-fast); letter-spacing:.05em; text-decoration:none; display:inline-block; }
+.btn-primary   { background:linear-gradient(135deg,var(--gold),var(--gold-dark)); color:var(--ink); font-weight:700; box-shadow:0 4px 0 var(--gold-dark),0 6px 14px rgba(0,0,0,.4); }
+.btn-secondary { background:rgba(255,255,255,.1); color:var(--cream); border:1px solid var(--gold-dark); }
+.btn-danger    { background:linear-gradient(135deg,#c0392b,#7b241c); color:#fff; box-shadow:0 4px 0 #7b241c; }
+.btn-ghost     { background:transparent; color:var(--cream-dark); border:1px solid rgba(255,255,255,.2); }
+.btn-full      { width:100%; text-align:center; margin-top:.4rem; }
+.btn-sm        { padding:.35rem .8rem; font-size:.72rem; }
+.btn-primary:hover   { transform:translateY(-2px); box-shadow:0 6px 0 var(--gold-dark),0 10px 20px rgba(0,0,0,.5); }
+.btn-danger:hover    { transform:translateY(-2px); }
+.btn-secondary:hover { background:rgba(255,255,255,.18); }
+.btn-ghost:hover     { background:rgba(255,255,255,.08); }
+
+/* Tabel admin */
+.table-wrap { overflow-x:auto; }
+.admin-table { width:100%; border-collapse:collapse; font-family:var(--font-ui); font-size:.78rem; }
+.admin-table th { background:rgba(245,200,66,.15); color:var(--gold); padding:.45rem .6rem; text-align:left; border-bottom:1px solid var(--gold-dark); font-size:.68rem; letter-spacing:.1em; }
+.admin-table td { padding:.4rem .6rem; border-bottom:1px solid rgba(255,255,255,.06); color:var(--cream); vertical-align:middle; }
+.admin-table tr:hover td { background:rgba(255,255,255,.04); }
+.tbl-del-btn { background:none; border:none; color:#F44336; cursor:pointer; font-size:1rem; padding:0; transition:transform var(--dur-fast); }
+.tbl-del-btn:hover { transform:scale(1.3); }
+
+/* Mini avatar di tabel */
+.tbl-avatar { width:32px; height:32px; border-radius:50%; object-fit:cover; border:1.5px solid var(--gold-dark); background:var(--teak); display:flex; align-items:center; justify-content:center; font-size:.8rem; font-family:var(--font-display); color:var(--ink); overflow:hidden; }
+.tbl-avatar img { width:100%; height:100%; object-fit:cover; }
+
+/* Login overlay */
+.login-overlay { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.85); backdrop-filter:blur(8px); }
+.login-box { background:linear-gradient(160deg,#2A0E00,#1A0800); border:2px solid var(--gold-dark); border-radius:16px; padding:2rem 2.5rem; width:min(400px,90vw); text-align:center; box-shadow:0 20px 60px rgba(0,0,0,.9),0 0 40px rgba(245,200,66,.15); animation:loginPop .5s var(--ease-bounce) both; }
+.login-icon { font-size:3rem; filter:drop-shadow(0 0 16px var(--gold)); margin-bottom:.5rem; }
+.login-title { font-family:var(--font-display); font-size:1.2rem; color:var(--gold-light); margin-bottom:.2rem; }
+.login-sub { font-size:.75rem; color:var(--cream-dark); margin-bottom:1.2rem; font-style:italic; }
+.login-box .form-group { text-align:left; }
+.login-error { color:#F44336; font-size:.75rem; min-height:1rem; margin:.5rem 0; }
+
+@keyframes shake { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-8px)} 40%{transform:translateX(8px)} 60%{transform:translateX(-6px)} 80%{transform:translateX(6px)} }
+
+@media (max-width:640px) {
+  .leaderboard-stage { grid-template-columns:1fr; }
+  .center-divider { display:none; }
+  .mode-grid { grid-template-columns:1fr; }
 }
 
 /* ================================================================
-   BAGIAN 9 — LEADERBOARD RENDER
+   MODAL BANTUAN (HELP)
    ================================================================ */
-function initLeaderboard() {
-  listenPeserta(()=>refreshLeaderboard());
-  listenLog(()=>refreshLeaderboard());
-  listenVotingDisplay();  // dengarkan flag tampilkan hasil voting
-  updateLeaderboardTimer();
-  // Unlock audio otomatis saat ada interaksi pertama (klik/sentuh) di mana saja.
-  // Ini agar BGM bisa autoplay pas countdown GO! tanpa diblokir browser.
-  const unlockOnce = () => {
-    unlockAudio();
-    document.removeEventListener('click', unlockOnce);
-    document.removeEventListener('touchstart', unlockOnce);
-  };
-  document.addEventListener('click', unlockOnce);
-  document.addEventListener('touchstart', unlockOnce);
+.help-overlay {
+  position:fixed; inset:0; z-index:300;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(0,0,0,.8); backdrop-filter:blur(6px);
+  padding:1rem;
 }
-function refreshLeaderboard() {
-  setRefreshIndicator('loading');
-  try {
-    const j=hitungSkor('jawara'), p=hitungSkor('penjelajah');
-    const jc=detectRankChanges(STATE.prevJawara,j), pc=detectRankChanges(STATE.prevPenjelajah,p);
-    STATE.prevJawara=[...STATE.jawara]; STATE.prevPenjelajah=[...STATE.penjelajah];
-    STATE.jawara=j; STATE.penjelajah=p;
-    renderBoard('jawara',j,jc); renderBoard('penjelajah',p,pc);
-    handleRankChanges(jc,pc); updateFooter(getAllPeserta().length);
-    setRefreshIndicator('live');
-  } catch(e){ console.error(e); setRefreshIndicator('error'); }
+.help-box {
+  position:relative;
+  background:linear-gradient(160deg,#2A0E00,#1A0800);
+  border:2px solid var(--gold-dark);
+  border-radius:18px;
+  padding:2rem 1.8rem;
+  width:min(440px,92vw);
+  max-height:85vh; overflow-y:auto;
+  text-align:center;
+  box-shadow:0 20px 60px rgba(0,0,0,.9),0 0 40px rgba(245,200,66,.15);
+  animation:loginPop .4s var(--ease-bounce) both;
 }
-function renderBoard(type,data,changes) {
-  const podiumEl=document.getElementById(`podium-${type}`), listEl=document.getElementById(`list-${type}`);
-  if (!podiumEl||!listEl) return;
-  const unit='Point';
-  const top3=data.slice(0,3);
-  podiumEl.innerHTML=top3.map((p,i)=>{
-    const rank=i+1, av=p.foto?`<img src="${p.foto}" alt="${escHtml(p.nama)}" />`:p.nama.charAt(0).toUpperCase();
-    return `<div class="podium-item rank-${rank}" title="${escHtml(p.kelas)}">
-      <div class="podium-avatar">${av}</div>
-      <div class="podium-name">${escHtml(p.nama)}</div>
-      <div class="podium-score">${p.skor} ${unit}</div>
-      <div class="podium-base">#${rank}</div></div>`;
-  }).join('');
-  const rest=data.slice(3), anim=type==='jawara'?'slideInLeft':'slideInRight';
-  listEl.innerHTML=rest.map((p,i)=>{
-    const rank=i+4, ch=changes.get(p.nama)||'same';
-    const ar=ch==='up'?'▲':(ch==='down'?'▼':''), col=ch==='up'?'#4CAF50':'#F44336';
-    return `<li class="rank-item ${ch!=='same'?'changed':''}" style="animation:${anim} ${0.3+i*0.07}s var(--ease-bounce) both" title="${escHtml(p.kelas)}">
-      <div class="rank-change ${ch}"></div><div class="rank-num">${rank}</div>
-      <div class="rank-info"><div class="rank-name">${escHtml(p.nama)}</div><div class="rank-origin">${escHtml(p.kelas)}</div></div>
-      <div class="rank-score">${p.skor} ${unit} ${ar?`<span style="font-size:.6rem;color:${col}">${ar}</span>`:''}</div></li>`;
-  }).join('');
-  if (top3.length>0 && STATE.prevJawara.length===0 && type==='jawara' && STATE.eventStatus==='running') setTimeout(fireConfetti,800);
+.help-close {
+  position:absolute; top:.8rem; right:1rem;
+  background:none; border:none; color:var(--cream-dark);
+  font-size:1.2rem; cursor:pointer; transition:color var(--dur-fast),transform var(--dur-fast);
+}
+.help-close:hover { color:var(--gold); transform:scale(1.2); }
+.help-icon { font-size:2.8rem; filter:drop-shadow(0 0 14px var(--gold)); margin-bottom:.4rem; }
+.help-title { font-family:var(--font-display); font-size:1.2rem; color:var(--gold-light); margin-bottom:1rem; }
+.help-content { text-align:left; margin-bottom:1.2rem; }
+.help-content ol { list-style:none; counter-reset:help; padding:0; display:flex; flex-direction:column; gap:.7rem; }
+.help-content li {
+  counter-increment:help;
+  position:relative; padding:.6rem .8rem .6rem 2.6rem;
+  background:rgba(255,255,255,.05);
+  border:1px solid rgba(245,200,66,.15);
+  border-radius:10px;
+  font-family:var(--font-ui); font-size:.82rem; color:var(--cream); line-height:1.5;
+}
+.help-content li::before {
+  content:counter(help);
+  position:absolute; left:.7rem; top:50%; transform:translateY(-50%);
+  width:24px; height:24px; border-radius:50%;
+  background:linear-gradient(135deg,var(--gold),var(--gold-dark));
+  color:var(--ink); font-family:var(--font-display); font-size:.8rem; font-weight:700;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:0 2px 6px rgba(0,0,0,.4);
+}
+.help-content li strong { color:var(--gold-light); }
+.help-note {
+  margin-top:.8rem; padding:.6rem .8rem;
+  background:rgba(245,200,66,.1); border-radius:8px;
+  font-family:var(--font-ui); font-size:.76rem; color:var(--cream-dark);
+  font-style:italic; line-height:1.5;
 }
 
 /* ================================================================
-   BAGIAN 10 — RANK CHANGE
+   UPDATE: TIMER, COUNTDOWN, MOBILE, AUTH, PASSWORD
    ================================================================ */
-function detectRankChanges(prev,curr) {
-  const ch=new Map(); if(!prev.length)return ch;
-  const pr=new Map(prev.map((p,i)=>[p.nama,i+1]));
-  curr.forEach((p,i)=>{const c=i+1,o=pr.get(p.nama);
-    if(o===undefined)ch.set(p.nama,'up');else if(c<o)ch.set(p.nama,'up');else if(c>o)ch.set(p.nama,'down');else ch.set(p.nama,'same');});
-  return ch;
+
+/* ── Timer di header leaderboard ── */
+.timer-display {
+  display:flex; align-items:center; gap:.5rem;
+  background:linear-gradient(135deg,rgba(245,200,66,.2),rgba(184,134,11,.15));
+  border:2px solid var(--gold); border-radius:24px;
+  padding:.5rem 1.2rem; box-shadow:0 0 16px rgba(245,200,66,.3);
 }
-function handleRankChanges(jc,pc) {
-  const all=[...jc.entries(),...pc.entries()];
-  const ups=all.filter(([,d])=>d==='up'), downs=all.filter(([,d])=>d==='down');
-  if(ups.length){playSound('sfx-rank-up');showRankToast('⬆️',`${ups[0][0]} naik posisi!`);}
-  else if(downs.length){playSound('sfx-rank-down');showRankToast('⬇️',`${downs[0][0]} turun posisi`);}
+.timer-icon { font-size:1.5rem; }
+.timer-text {
+  font-family:var(--font-display); font-size:1.8rem; font-weight:700;
+  color:var(--gold-light); text-shadow:0 0 10px var(--gold);
+  letter-spacing:.05em; min-width:100px; text-align:center;
 }
-function showRankToast(icon,msg){const t=document.getElementById('rank-toast');if(!t)return;
-  document.getElementById('rank-toast-icon').textContent=icon;document.getElementById('rank-toast-msg').textContent=msg;
-  t.classList.add('show');setTimeout(()=>t.classList.remove('show'),3000);}
-function setRefreshIndicator(s){const d=document.querySelector('.refresh-dot'),l=document.querySelector('.refresh-label');if(!d)return;
-  const m={live:['#4CAF50','Live'],loading:['#FFC107','Sync...'],error:['#F44336','Error']};const[c,t]=m[s]||['#888','—'];d.style.background=c;if(l)l.textContent=t;}
-function updateFooter(total){const u=document.getElementById('last-update'),t=document.getElementById('total-peserta');
-  if(u)u.textContent=new Date().toLocaleTimeString('id-ID');if(t)t.textContent=total;}
+
+/* ── Overlay countdown 3-2-1 ── */
+.countdown-overlay {
+  position:fixed; inset:0; z-index:500;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(14,6,0,.92); backdrop-filter:blur(8px);
+}
+.countdown-number {
+  font-family:var(--font-display); font-weight:900;
+  font-size:clamp(5rem,25vw,16rem);
+  color:var(--gold-light);
+  text-shadow:0 0 40px var(--gold),0 0 80px var(--gold-dark);
+  animation:cdPop .8s ease;
+}
+@keyframes cdPop {
+  0%   { transform:scale(0) rotate(-20deg); opacity:0; }
+  50%  { transform:scale(1.3) rotate(5deg); opacity:1; }
+  100% { transform:scale(1) rotate(0); opacity:1; }
+}
+
+/* ── Overlay status (idle/ended) ── */
+.status-overlay {
+  position:fixed; inset:0; z-index:450;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(14,6,0,.88); backdrop-filter:blur(10px);
+}
+.status-box {
+  text-align:center; padding:2.5rem 3rem;
+  background:linear-gradient(160deg,#2A0E00,#1A0800);
+  border:2px solid var(--gold-dark); border-radius:20px;
+  box-shadow:0 20px 60px rgba(0,0,0,.9),0 0 50px rgba(245,200,66,.15);
+  animation:loginPop .5s var(--ease-bounce) both; max-width:90vw;
+}
+.status-icon { font-size:4rem; filter:drop-shadow(0 0 20px var(--gold)); margin-bottom:.5rem; }
+.status-title { font-family:var(--font-display); font-size:1.6rem; color:var(--gold-light); margin-bottom:.5rem; }
+.status-msg { font-family:var(--font-ui); font-size:.9rem; color:var(--cream-dark); }
+
+/* ── Timer di admin panel ── */
+.timer-status-big {
+  text-align:center; padding:1.5rem;
+  background:rgba(255,255,255,.05); border:1px solid var(--gold-dark);
+  border-radius:14px; margin-bottom:1rem;
+}
+.timer-status-label { font-family:var(--font-ui); font-size:.7rem; color:var(--cream-dark); letter-spacing:.2em; text-transform:uppercase; }
+.timer-status-value { font-family:var(--font-display); font-size:1.2rem; margin:.3rem 0; }
+.timer-countdown-big { font-family:var(--font-display); font-size:3rem; font-weight:900; color:var(--gold-light); text-shadow:0 0 20px var(--gold); }
+
+/* ════════════════ MOBILE OPTIMIZATIONS ════════════════ */
+
+/* Header mobile (peserta & panitia) */
+.mobile-header { padding:.7rem 1rem; }
+.mobile-title { font-size:1.1rem !important; }
+.mobile-content { max-width:540px; padding:1rem .9rem 3rem; }
+
+/* Auth card (login/daftar) */
+.auth-card {
+  background:linear-gradient(160deg,#2A0E00,#1A0800);
+  border:2px solid var(--gold-dark); border-radius:18px;
+  overflow:hidden; box-shadow:var(--shadow-card);
+  animation:loginPop .5s var(--ease-bounce) both;
+}
+.auth-tabs { display:flex; }
+.auth-tab {
+  flex:1; padding:.9rem; border:none; cursor:pointer;
+  font-family:var(--font-ui); font-size:.85rem; font-weight:600;
+  background:rgba(0,0,0,.3); color:var(--cream-dark);
+  transition:all var(--dur-fast);
+}
+.auth-tab.active { background:rgba(245,200,66,.15); color:var(--gold); border-bottom:2px solid var(--gold); }
+.auth-pane { display:none; padding:1.5rem 1.3rem; }
+.auth-pane.active { display:block; }
+
+/* Profile card mobile */
+.profile-card-mobile {
+  background:linear-gradient(160deg,#2A0E00,#1A0800);
+  border:2px solid var(--gold-dark); border-radius:18px;
+  padding:1.5rem 1.3rem; text-align:center;
+  box-shadow:var(--shadow-card); animation:loginPop .5s var(--ease-bounce) both;
+}
+.profile-card-mobile .profile-photo-wrap { margin-bottom:.6rem; }
+.profile-card-mobile #profile-qr-canvas img,
+.profile-card-mobile #profile-qr-canvas canvas {
+  border:4px solid var(--gold); border-radius:8px; background:#fff; padding:3px;
+}
+
+/* Panitia status banner */
+.panitia-status-banner {
+  text-align:center; padding:.7rem 1rem; border-radius:12px;
+  font-family:var(--font-ui); font-size:.82rem; font-weight:600;
+  margin-bottom:1rem; border:1.5px solid;
+  transition:all var(--dur-med);
+}
+.panitia-status-banner.idle    { background:rgba(255,193,7,.12); border-color:#FFC107; color:#FFD54F; }
+.panitia-status-banner.running { background:rgba(76,175,80,.15); border-color:#4CAF50; color:#A5D6A7; box-shadow:0 0 16px rgba(76,175,80,.3); }
+.panitia-status-banner.ended   { background:rgba(244,67,54,.12); border-color:#F44336; color:#EF9A9A; }
+
+/* Lomba grid lebih rapi di mobile */
+@media (max-width:560px) {
+  .lomba-grid { grid-template-columns:repeat(2,1fr); gap:.6rem; }
+  .lomba-btn { font-size:.74rem; padding:.8rem .4rem; }
+  .mode-grid { grid-template-columns:1fr 1fr; }
+  .panitia-step { padding:1.1rem; }
+  .timer-display { padding:.25rem .6rem; }
+  .timer-text { font-size:.95rem; min-width:54px; }
+  .header-controls { gap:.35rem; }
+  .ctrl-btn { width:32px; height:32px; font-size:.9rem; }
+}
+
+/* Password cell di admin */
+.pw-cell { font-family:monospace; font-size:.78rem; color:var(--gold-light); }
+.tbl-mini-btn {
+  background:none; border:none; cursor:pointer; font-size:.85rem;
+  padding:0 0 0 .3rem; opacity:.7; transition:opacity var(--dur-fast),transform var(--dur-fast);
+}
+.tbl-mini-btn:hover { opacity:1; transform:scale(1.2); }
+
+/* Particle logo (background) */
+.particle-logo { display:flex; align-items:center; justify-content:center; }
 
 /* ================================================================
-   BAGIAN 11 — HALAMAN PESERTA
+   MODE 16:9 PAKSA — khusus halaman LEADERBOARD (untuk videotron)
    ================================================================ */
-function initPeserta() {
-  maybeAutoHelp('peserta');  // tampilkan help otomatis sekali
-  listenVote();              // dengarkan data vote (untuk cek status)
-
-  listenPeserta(()=>{
-    if (STATE.pesertaAktif) {
-      const p=getAllPeserta().find(x=>x.id===STATE.pesertaAktif.id);
-      if (p) updateProfilPoin(p.id);
-    }
-  });
-  listenLog(()=>{ if(STATE.pesertaAktif) updateProfilPoin(STATE.pesertaAktif.id); });
-
-  // Cek sesi login tersimpan
-  const savedId = localStorage.getItem('pesertaAktifId');
-  if (savedId) {
-    setTimeout(()=>{
-      const p=getAllPeserta().find(x=>x.id===savedId);
-      if (p) tampilkanProfil(p); else showAuth();
-    },800);
-  } else showAuth();
+#page-leaderboard {
+  position:fixed; inset:0;
+  width:100vw; height:100vh; min-height:0;
+  display:flex; align-items:center; justify-content:center;
+  background:#000; overflow:hidden;
 }
-function showAuth() {
-  document.getElementById('peserta-auth-section').style.display='block';
-  document.getElementById('peserta-profile-section').style.display='none';
+/* Kotak 16:9 di tengah: selebar mungkin tapi tidak melebihi tinggi layar */
+.lb169-wrap {
+  width:min(100vw, calc(100vh * 16 / 9));
+  height:min(100vh, calc(100vw * 9 / 16));
+  display:flex; flex-direction:column;
+  overflow:hidden; position:relative;
+  box-shadow:0 0 80px rgba(0,0,0,.8);
 }
-function switchAuthTab(tab) {
-  document.getElementById('auth-tab-login').classList.toggle('active', tab==='login');
-  document.getElementById('auth-tab-daftar').classList.toggle('active', tab==='daftar');
-  document.getElementById('auth-pane-login').classList.toggle('active', tab==='login');
-  document.getElementById('auth-pane-daftar').classList.toggle('active', tab==='daftar');
-}
-
-/** Proses daftar */
-async function daftarPeserta() {
-  const nama=document.getElementById('daftar-nama')?.value.trim();
-  const kelas=document.getElementById('daftar-kelas')?.value.trim();
-  const username=document.getElementById('daftar-username')?.value.trim();
-  const password=document.getElementById('daftar-password')?.value;
-  const err=document.getElementById('daftar-peserta-error');
-  if (!nama||!kelas||!username||!password){ if(err)err.textContent='❌ Semua kolom wajib diisi!'; return; }
-  if(err) err.textContent='⏳ Mendaftar...';
-  try {
-    const r=await registerPeserta(nama,kelas,username,password);
-    if (!r.ok){ if(err)err.textContent='❌ '+r.msg; return; }
-    localStorage.setItem('pesertaAktifId', r.peserta.id);
-    tampilkanProfil(r.peserta);
-  } catch(e){ if(err)err.textContent='❌ Gagal: '+e.message; }
-}
-
-/** Proses login */
-async function loginPeserta() {
-  const username=document.getElementById('login-username')?.value.trim();
-  const password=document.getElementById('login-password')?.value;
-  const err=document.getElementById('login-peserta-error');
-  if (!username||!password){ if(err)err.textContent='❌ Isi username & password!'; return; }
-  if(err) err.textContent='⏳ Masuk...';
-  try {
-    const r=await authPeserta(username,password);
-    if (!r.ok){ if(err)err.textContent='❌ '+r.msg; return; }
-    localStorage.setItem('pesertaAktifId', r.peserta.id);
-    tampilkanProfil(r.peserta);
-  } catch(e){ if(err)err.textContent='❌ Gagal: '+e.message; }
-}
-
-function tampilkanProfil(peserta) {
-  STATE.pesertaAktif=peserta;
-  document.getElementById('peserta-auth-section').style.display='none';
-  document.getElementById('peserta-profile-section').style.display='block';
-  document.getElementById('profile-name-display').textContent=peserta.nama;
-  document.getElementById('profile-kelas-display').textContent=peserta.kelas;
-  document.getElementById('profile-initial').textContent=peserta.nama.charAt(0).toUpperCase();
-  if (peserta.foto) {
-    const img=document.getElementById('profile-photo-img');
-    img.src=peserta.foto; img.style.display='block';
-    document.getElementById('profile-initial').style.display='none';
-  }
-  const qc=document.getElementById('profile-qr-canvas');
-  if (qc){ qc.innerHTML=''; new QRCode(qc,{text:peserta.id,width:170,height:170,correctLevel:QRCode.CorrectLevel.H}); }
-  updateProfilPoin(peserta.id);
-  if (STATE.eventStatus==='ended' && !STATE._voteAutoOpened) {
-    STATE._voteAutoOpened = true;
-    setTimeout(() => showVoting(), 600);
-  }
-}
-function updateProfilPoin(id) {
-  const poin=getPoinPeserta(id);
-  const j=document.getElementById('stat-jawara'),p=document.getElementById('stat-penjelajah');
-  if(j)j.textContent=poin.jawara; if(p)p.textContent=poin.penjelajah;
-}
-async function handleFotoUpload(event) {
-  const file=event.target.files[0]; if(!file||!STATE.pesertaAktif)return;
-  showToast('⏳ Mengupload foto...');
-  const reader=new FileReader();
-  reader.onload=(e)=>{const img=new Image();img.onload=async()=>{
-    const size=Math.min(img.width,img.height),canvas=document.createElement('canvas');
-    canvas.width=canvas.height=300;const ctx=canvas.getContext('2d');
-    ctx.drawImage(img,(img.width-size)/2,(img.height-size)/2,size,size,0,0,300,300);
-    canvas.toBlob(async(blob)=>{try{
-      const url=await updateFotoPeserta(STATE.pesertaAktif.id,blob);
-      STATE.pesertaAktif.foto=url;
-      const ie=document.getElementById('profile-photo-img');ie.src=url;ie.style.display='block';
-      document.getElementById('profile-initial').style.display='none';
-      showToast('✅ Foto diperbarui!');
-    }catch(err){showToast('❌ Gagal: '+err.message);}},'image/jpeg',0.85);
-  };img.src=e.target.result;};
-  reader.readAsDataURL(file);
-}
-function logoutPeserta() {
-  if (!confirm('Keluar dari akun ini?')) return;
-  localStorage.removeItem('pesertaAktifId'); STATE.pesertaAktif=null; location.reload();
-}
+.lb169-wrap .leaderboard-stage { flex:1; min-height:0; max-height:none; }
+.lb169-wrap .site-header,
+.lb169-wrap .site-footer { flex-shrink:0; }
 
 /* ================================================================
-   BAGIAN 11B — VOTING LOMBA FAVORIT
-   Collection "vote": { pesertaId, lomba, waktu }
-   - Peserta hanya bisa vote lomba yang DIA IKUTI (ada di log penjelajah)
-   - Hanya 1 vote per peserta
-   - Hanya bisa vote SETELAH event berakhir (status 'ended')
+   VOTING — modal peserta & card hasil di leaderboard
    ================================================================ */
 
-/**
- * Tampilkan modal voting untuk peserta.
- * Hanya menampilkan lomba yang peserta ikuti (mode penjelajah).
- */
-async function showVoting() {
-  const overlay = document.getElementById('vote-overlay');
-  const body    = document.getElementById('vote-body');
-  if (!overlay || !body) return;
+/* Info teks di modal voting */
+.vote-info { font-family:var(--font-ui); font-size:.85rem; color:var(--cream); line-height:1.6; text-align:center; margin-bottom:1rem; }
 
-  // Harus sudah login
-  if (!STATE.pesertaAktif) {
-    showToast('⚠️ Login dulu untuk bisa vote');
-    return;
-  }
-
-  // Voting hanya setelah event berakhir
-  if (STATE.eventStatus !== 'ended') {
-    body.innerHTML = `<p class="vote-info">⏳ Voting dibuka setelah event selesai.<br>Tunggu sampai waktu habis ya!</p>`;
-    overlay.style.display='flex';
-    return;
-  }
-
-  body.innerHTML = `<p class="vote-info">⏳ Memuat lomba yang kamu ikuti...</p>`;
-  overlay.style.display='flex';
-
-  const pid = STATE.pesertaAktif.id;
-
-  // Cek apakah sudah pernah vote
-  const sudahVote = await db.collection('vote').where('pesertaId','==',pid).get();
-  if (!sudahVote.empty) {
-    const v = sudahVote.docs[0].data();
-    body.innerHTML = `<p class="vote-info">✅ Kamu sudah vote!<br>Pilihan kamu: <strong>${escHtml(v.lomba)}</strong><br><span style="font-size:.75rem;color:var(--cream-dark)">Terima kasih sudah berpartisipasi 🎉</span></p>`;
-    return;
-  }
-
-  // Ambil lomba yang peserta ikuti (dari log mode penjelajah)
-  const lombaDiikuti = [...new Set(
-    getAllLog().filter(l => l.pesertaId===pid && l.mode==='penjelajah').map(l => l.lomba)
-  )];
-
-  if (!lombaDiikuti.length) {
-    body.innerHTML = `<p class="vote-info">😅 Kamu belum tercatat mengikuti lomba apapun, jadi belum bisa vote.</p>`;
-    return;
-  }
-
-  // Tampilkan tombol lomba yang diikuti + yang tidak diikuti (disabled)
-  const semuaLomba = CONFIG.daftarLomba;
-  body.innerHTML = `
-    <p class="vote-info">Pilih <strong>1 lomba favorit</strong> kamu (hanya lomba yang kamu ikuti yang bisa dipilih):</p>
-    <div class="vote-grid">
-      ${semuaLomba.map(lomba => {
-        const ikut = lombaDiikuti.includes(lomba);
-        return `<button class="vote-opt ${ikut?'':'locked'}"
-                  ${ikut?`onclick="kirimVote('${escHtml(lomba)}')"`:'disabled'}>
-                  ${ikut?'🎮':'🔒'} ${escHtml(lomba)}
-                </button>`;
-      }).join('')}
-    </div>`;
+/* Grid pilihan lomba */
+.vote-grid { display:grid; grid-template-columns:1fr 1fr; gap:.6rem; }
+.vote-opt {
+  padding:.7rem .5rem; border-radius:10px; cursor:pointer;
+  font-family:var(--font-ui); font-size:.78rem; font-weight:600;
+  background:rgba(245,200,66,.12); border:1.5px solid var(--gold-dark); color:var(--cream);
+  transition:all var(--dur-fast); box-shadow:0 3px 0 rgba(0,0,0,.3);
 }
+.vote-opt:hover:not(.locked) { background:rgba(245,200,66,.28); border-color:var(--gold); color:var(--gold); transform:translateY(-2px); box-shadow:0 5px 0 rgba(0,0,0,.3); }
+.vote-opt.locked { opacity:.4; cursor:not-allowed; background:rgba(255,255,255,.04); border-color:rgba(255,255,255,.15); }
 
-/** Kirim vote peserta */
-async function kirimVote(lomba) {
-  if (!STATE.pesertaAktif) return;
-  const pid = STATE.pesertaAktif.id;
-  if (!confirm(`Vote "${lomba}" sebagai lomba favorit? Vote tidak bisa diubah.`)) return;
+/* Preview hasil voting di admin */
+.vote-admin-preview { font-family:var(--font-ui); font-size:.85rem; color:var(--cream); background:rgba(255,255,255,.05); border:1px solid var(--gold-dark); border-radius:10px; padding:.9rem 1rem; line-height:1.6; }
 
-  // Cek ulang belum vote (jaga-jaga)
-  const cek = await db.collection('vote').where('pesertaId','==',pid).get();
-  if (!cek.empty) { showToast('Kamu sudah vote sebelumnya'); return; }
-
-  await db.collection('vote').add({
-    pesertaId: pid, lomba,
-    waktu: firebase.firestore.FieldValue.serverTimestamp(),
-  });
-  document.getElementById('vote-body').innerHTML =
-    `<p class="vote-info">✅ Vote berhasil!<br>Kamu memilih: <strong>${escHtml(lomba)}</strong><br><span style="font-size:.75rem;color:var(--cream-dark)">Terima kasih 🎉</span></p>`;
-  showToast('🗳️ Vote kamu tercatat!');
+/* ── Card hasil voting di leaderboard (pop-up tengah) ── */
+.vote-result-overlay {
+  position:fixed; inset:0; z-index:480;
+  display:flex; align-items:center; justify-content:center;
+  background:rgba(14,6,0,.85); backdrop-filter:blur(10px);
 }
-
-function closeVoting(event) {
-  if (event && event.target.id!=='vote-overlay') return;
-  document.getElementById('vote-overlay').style.display='none';
+.vote-result-card {
+  position:relative; text-align:center;
+  padding:3rem 3.5rem 2.5rem;
+  background:linear-gradient(160deg,#3D1A00,#1A0800);
+  border:3px solid var(--gold); border-radius:24px;
+  box-shadow:0 24px 70px rgba(0,0,0,.9),0 0 60px rgba(245,200,66,.35);
+  animation:votePop .7s var(--ease-bounce) both;
+  max-width:90vw;
 }
-
-/* ── ADMIN & LEADERBOARD: hasil voting ── */
-
-/** Listen voting realtime (dipakai admin & leaderboard) */
-function listenVote(cb) {
-  if (STATE.unsubVote) STATE.unsubVote();
-  STATE.unsubVote = db.collection('vote').onSnapshot(snap => {
-    STATE.cacheVote = snap.docs.map(d=>({id:d.id,...d.data()}));
-    if (cb) cb();
-  }, err=>console.error('[FS vote]',err));
+@keyframes votePop {
+  0%   { transform:scale(0.5) rotate(-8deg); opacity:0; }
+  60%  { transform:scale(1.08) rotate(3deg); opacity:1; }
+  100% { transform:scale(1) rotate(0); opacity:1; }
 }
-
-/** Hitung lomba dengan vote terbanyak. @returns {{lomba, count}|null} */
-function hitungVoteTerbanyak() {
-  const votes = STATE.cacheVote || [];
-  if (!votes.length) return null;
-  const map = {};
-  votes.forEach(v => map[v.lomba] = (map[v.lomba]||0)+1);
-  let best=null, bestCount=0;
-  for (const [lomba,count] of Object.entries(map)) {
-    if (count>bestCount) { best=lomba; bestCount=count; }
-  }
-  return { lomba:best, count:bestCount };
+.vote-result-ribbon {
+  position:absolute; top:-16px; left:50%; transform:translateX(-50%);
+  background:linear-gradient(135deg,var(--gold),var(--gold-dark));
+  color:var(--ink); font-family:var(--font-ui); font-weight:700;
+  font-size:.78rem; letter-spacing:.15em; padding:.4rem 1.4rem;
+  border-radius:20px; white-space:nowrap;
+  box-shadow:0 4px 14px rgba(0,0,0,.5);
 }
-
-/** ADMIN: tampilkan hasil voting di leaderboard (set flag di Firestore) */
-async function showVotingResult() {
-  const hasil = hitungVoteTerbanyak();
-  if (!hasil) { showToast('⚠️ Belum ada voting masuk'); return; }
-  await db.collection('event').doc('voting').set({
-    show:true, lomba:hasil.lomba, count:hasil.count, updatedAt:Date.now(),
-  });
-  showToast(`📊 Menampilkan: ${hasil.lomba} (${hasil.count} suara)`);
+.vote-result-trophy { font-size:4.5rem; filter:drop-shadow(0 0 24px var(--gold)); animation:crownBob 2s ease-in-out infinite; margin-bottom:.3rem; }
+.vote-result-name {
+  font-family:var(--font-display); font-size:clamp(1.6rem,4vw,2.6rem);
+  color:var(--gold-light); text-shadow:0 0 24px var(--gold),2px 2px 0 var(--gold-dark);
+  margin-bottom:.4rem; letter-spacing:.05em;
 }
-
-/** ADMIN: sembunyikan hasil voting */
-async function hideVotingResult() {
-  await db.collection('event').doc('voting').set({ show:false }, { merge:true });
-  showToast('🙈 Hasil voting disembunyikan');
-}
-
-/** ADMIN: reset semua voting */
-async function resetVoting() {
-  if (!confirm('⚠️ Hapus semua data voting?')) return;
-  await deleteCollection('vote');
-  await db.collection('event').doc('voting').set({ show:false }, { merge:true });
-  showToast('🗑️ Voting direset');
-}
-
-/** Listen flag tampilkan hasil voting (untuk leaderboard) */
-function listenVotingDisplay() {
-  if (STATE.unsubVoteDisplay) STATE.unsubVoteDisplay();
-  STATE.unsubVoteDisplay = db.collection('event').doc('voting').onSnapshot(doc => {
-    const ov = document.getElementById('vote-result-overlay');
-    if (!ov) return;
-    if (doc.exists && doc.data().show) {
-      const d = doc.data();
-      document.getElementById('vote-result-name').textContent  = d.lomba || '—';
-      document.getElementById('vote-result-count').textContent = `${d.count||0} suara`;
-      ov.style.display='flex';
-      fireConfetti();
-    } else {
-      ov.style.display='none';
-    }
-  }, err=>console.error('[FS voteDisplay]',err));
-}
-
-/** Update preview hasil voting di admin */
-function updateVoteAdminPreview() {
-  const el = document.getElementById('vote-admin-preview');
-  if (!el) return;
-  const hasil = hitungVoteTerbanyak();
-  const total = (STATE.cacheVote||[]).length;
-  if (!hasil) { el.textContent='Belum ada data voting.'; return; }
-  el.innerHTML = `Total suara masuk: <strong>${total}</strong><br>Terbanyak: <strong style="color:var(--gold)">${escHtml(hasil.lomba)}</strong> (${hasil.count} suara)`;
-}
-
-/**
- * Helper: ubah array of array jadi string CSV & trigger download.
- * @param {Array<Array>} rows - baris pertama = header
- * @param {string} filename
- */
-function downloadCSV(rows, filename) {
-  // Escape tiap sel: bungkus tanda kutip & ganti " jadi ""
-  const csv = rows.map(r =>
-    r.map(cell => `"${String(cell ?? '').replace(/"/g,'""')}"`).join(',')
-  ).join('\r\n');
-  // Tambah BOM agar Excel baca UTF-8 (emoji & karakter Indonesia aman)
-  const blob = new Blob(['\uFEFF'+csv], { type:'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
-}
-
-/**
- * Export DETAIL voting: tiap baris = 1 vote (nama, kelas, username, lomba, waktu).
- * Data peserta diambil dari cache agar nama/kelas ikut.
- */
-function exportVoteCSV() {
-  const votes = STATE.cacheVote || [];
-  if (!votes.length) { showToast('⚠️ Belum ada data voting'); return; }
-
-  const peserta = getAllPeserta();
-  const rows = [['Nama','Kelas','Username','Lomba Favorit','Waktu Vote']];
-  votes
-    .sort((a,b)=>toMillis(a.waktu)-toMillis(b.waktu))
-    .forEach(v => {
-      const p = peserta.find(x => x.id === v.pesertaId) || {};
-      rows.push([
-        p.nama || '(terhapus)',
-        p.kelas || '-',
-        p.username || '-',
-        v.lomba,
-        formatWaktu(v.waktu),
-      ]);
-    });
-
-  const tgl = new Date().toISOString().slice(0,10);
-  downloadCSV(rows, `voting-detail-${tgl}.csv`);
-  showToast('📥 Detail voting diunduh');
-}
-
-/**
- * Export REKAP voting: jumlah suara per lomba (urut terbanyak).
- */
-function exportVoteRekapCSV() {
-  const votes = STATE.cacheVote || [];
-  if (!votes.length) { showToast('⚠️ Belum ada data voting'); return; }
-
-  const map = {};
-  votes.forEach(v => map[v.lomba] = (map[v.lomba]||0)+1);
-
-  const rows = [['Peringkat','Lomba','Jumlah Suara']];
-  Object.entries(map)
-    .sort((a,b)=>b[1]-a[1])
-    .forEach(([lomba,count],i) => rows.push([i+1, lomba, count]));
-
-  const tgl = new Date().toISOString().slice(0,10);
-  downloadCSV(rows, `voting-rekap-${tgl}.csv`);
-  showToast('📥 Rekap voting diunduh');
-}
-
-/* ================================================================
-   BAGIAN 12 — HALAMAN PANITIA
-   ================================================================ */
-function initPanitia() {
-  maybeAutoHelp('panitia');
-  listenPeserta(); listenLog();
-  renderLombaGrid();
-  updatePanitiaStatus();
-}
-
-/** Update banner status event di panitia + enable/disable */
-function updatePanitiaStatus() {
-  const banner=document.getElementById('panitia-status-banner');
-  const text=document.getElementById('panitia-status-text');
-  if (!banner) return;
-  if (STATE.eventStatus==='running') {
-    banner.className='panitia-status-banner running';
-    text.textContent=`🟢 Event berlangsung · Sisa ${sisaWaktuStr()}`;
-  } else if (STATE.eventStatus==='ended') {
-    banner.className='panitia-status-banner ended';
-    text.textContent='🔴 Event selesai · Scan dinonaktifkan';
-  } else {
-    banner.className='panitia-status-banner idle';
-    text.textContent='⏳ Menunggu event dimulai admin...';
-  }
-}
-
-function renderLombaGrid() {
-  const g=document.getElementById('lomba-grid'); if(!g)return;
-  g.innerHTML=CONFIG.daftarLomba.map((l,i)=>`<button class="lomba-btn" onclick="pilihLomba('${escHtml(l)}',this)">
-    <div style="font-size:1.3rem;margin-bottom:.3rem">${getLombaEmoji(i)}</div>${escHtml(l)}</button>`).join('');
-}
-function getLombaEmoji(i){return['🎯','🏃','🎨','🎭','🎵','🏆','⚡','🌟','🎪','🎲','🌺','🎋'][i%12];}
-
-function pilihLomba(l,btn) {
-  // Cegah pilih lomba kalau event belum mulai
-  if (STATE.eventStatus!=='running') { showToast('⚠️ Event belum dimulai / sudah ditutup'); return; }
-  STATE.lombaAktif=l;
-  document.querySelectorAll('.lomba-btn').forEach(b=>b.classList.remove('selected'));
-  btn.classList.add('selected');
-  document.getElementById('step-pilih-lomba').style.display='none';
-  document.getElementById('step-pilih-mode').style.display='block';
-  document.getElementById('lomba-terpilih-label').textContent=l;
-}
-function mulaiScan(mode) {
-  STATE.modeAktif=mode;
-  document.getElementById('step-pilih-mode').style.display='none';
-  document.getElementById('step-scanner').style.display='block';
-  document.getElementById('scan-lomba-label').textContent=STATE.lombaAktif;
-  document.getElementById('scan-mode-label').textContent=mode==='jawara'?'👑 Jawara':'🗺️ Penjelajah';
-  document.getElementById('scan-result').style.display='none';
-  STATE.qrScanner=new Html5Qrcode('qr-reader');
-  STATE.qrScanner.start({facingMode:'environment'},{fps:10,qrbox:{width:220,height:220}},
-    (t)=>onQRScan(t),()=>{}).catch(err=>showToast('⚠️ Kamera: '+err));
-}
-async function onQRScan(pesertaId) {
-  if (STATE.qrScanner) STATE.qrScanner.pause();
-  const r=document.getElementById('scan-result');
-  r.style.display='block';r.className='scan-result';
-  document.getElementById('scan-result-icon').textContent='⏳';
-  document.getElementById('scan-result-name').textContent='Memproses...';
-  document.getElementById('scan-result-msg').textContent='';
-  try {
-    const status=await tambahScore(pesertaId,STATE.lombaAktif,STATE.modeAktif);
-    const peserta=getAllPeserta().find(p=>p.id===pesertaId);
-    if (status==='ok') {
-      r.classList.add('ok');
-      document.getElementById('scan-result-icon').textContent='✅';
-      document.getElementById('scan-result-name').textContent=peserta?.nama||pesertaId;
-      document.getElementById('scan-result-msg').textContent=`+1 ${STATE.modeAktif==='jawara'?'Jawara':'Penjelajah'}!`;
-      playSound('sfx-scan-ok');
-      STATE.scanLog.unshift({nama:peserta?.nama,status:'OK',waktu:new Date().toLocaleTimeString('id-ID')});renderScanLog();
-    } else if (status==='duplikat') {
-      r.classList.add('err');document.getElementById('scan-result-icon').textContent='⚠️';
-      document.getElementById('scan-result-name').textContent=peserta?.nama||'—';
-      document.getElementById('scan-result-msg').textContent='Sudah di-scan di lomba ini!';playSound('sfx-scan-err');
-    } else if (status==='event_tutup') {
-      r.classList.add('err');document.getElementById('scan-result-icon').textContent='🔒';
-      document.getElementById('scan-result-name').textContent='—';
-      document.getElementById('scan-result-msg').textContent='Event belum mulai / sudah ditutup!';playSound('sfx-scan-err');
-    } else {
-      r.classList.add('err');document.getElementById('scan-result-icon').textContent='❌';
-      document.getElementById('scan-result-name').textContent='—';
-      document.getElementById('scan-result-msg').textContent='QR tidak dikenali';playSound('sfx-scan-err');
-    }
-  } catch(e){ r.classList.add('err');document.getElementById('scan-result-msg').textContent='Error: '+e.message; }
-  setTimeout(()=>{if(STATE.qrScanner)STATE.qrScanner.resume();},2500);
-}
-function renderScanLog() {
-  const ul=document.getElementById('scan-log-list');if(!ul)return;
-  ul.innerHTML=STATE.scanLog.slice(0,15).map(l=>`<li><span>${escHtml(l.nama||'—')}</span>
-    <span style="color:${l.status==='OK'?'#4CAF50':'#F44336'}">${l.status} · ${l.waktu}</span></li>`).join('');
-}
-function stopScan(){if(STATE.qrScanner){STATE.qrScanner.stop().catch(()=>{});STATE.qrScanner=null;}resetPanitia();}
-function resetPanitia(){STATE.lombaAktif=null;STATE.modeAktif=null;
-  document.getElementById('step-pilih-lomba').style.display='block';
-  document.getElementById('step-pilih-mode').style.display='none';
-  document.getElementById('step-scanner').style.display='none';
-  document.querySelectorAll('.lomba-btn').forEach(b=>b.classList.remove('selected'));}
-
-/* ================================================================
-   BAGIAN 13 — ADMIN PANEL
-   ================================================================ */
-function switchAdminTab(tabId) {
-  document.querySelectorAll('.admin-tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.admin-tab-content').forEach(c=>c.classList.remove('active'));
-  document.getElementById(tabId)?.classList.add('active');
-  document.querySelectorAll('.admin-tab').forEach(b=>{if(b.getAttribute('onclick')?.includes(tabId))b.classList.add('active');});
-}
-function renderPesertaTable() {
-  const tb=document.getElementById('tbody-peserta'),c=document.getElementById('total-count');if(!tb)return;
-  const q=document.getElementById('search-peserta')?.value.toLowerCase()||'';
-  const ps=getAllPeserta().filter(p=>p.nama.toLowerCase().includes(q)||p.kelas.toLowerCase().includes(q)||(p.username||'').toLowerCase().includes(q));
-  if(c)c.textContent=getAllPeserta().length;
-  if(!ps.length){tb.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--cream-dark);padding:1.5rem">Belum ada peserta</td></tr>';return;}
-  tb.innerHTML=ps.map(p=>{const poin=getPoinPeserta(p.id);
-    const av=p.foto?`<div class="tbl-avatar"><img src="${p.foto}"/></div>`:`<div class="tbl-avatar">${p.nama.charAt(0).toUpperCase()}</div>`;
-    return `<tr><td>${av}</td><td>${escHtml(p.nama)}</td><td>${escHtml(p.kelas)}</td>
-      <td style="font-size:.72rem">${escHtml(p.username||'—')}</td>
-      <td><span class="pw-cell">${escHtml(p.password||'—')}</span>
-        <button class="tbl-mini-btn" onclick="ubahPasswordPeserta('${p.id}','${escHtml(p.nama)}')" title="Ubah password">✏️</button></td>
-      <td style="color:var(--gold)">${poin.jawara}</td><td style="color:#A8E6CF">${poin.penjelajah}</td>
-      <td><button class="tbl-del-btn" onclick="hapusPeserta('${p.id}')" title="Hapus">🗑️</button></td></tr>`;
-  }).join('');
-}
-function renderLogTable() {
-  const tb=document.getElementById('tbody-log');if(!tb)return;
-  const fl=document.getElementById('filter-lomba')?.value||'',fm=document.getElementById('filter-mode')?.value||'';
-  let log=getAllLog();if(fl)log=log.filter(l=>l.lomba===fl);if(fm)log=log.filter(l=>l.mode===fm);
-  log=log.sort((a,b)=>toMillis(b.waktu)-toMillis(a.waktu));
-  if(!log.length){tb.innerHTML='<tr><td colspan="6" style="text-align:center;color:var(--cream-dark);padding:1.5rem">Belum ada data</td></tr>';return;}
-  tb.innerHTML=log.map(l=>`<tr><td style="font-size:.7rem">${formatWaktu(l.waktu)}</td>
-    <td>${escHtml(l.nama)}</td><td>${escHtml(l.kelas)}</td><td>${escHtml(l.lomba)}</td>
-    <td><span style="color:${l.mode==='jawara'?'var(--gold)':'#A8E6CF'}">${l.mode==='jawara'?'👑':'🗺️'}</span></td>
-    <td><button class="tbl-del-btn" onclick="hapusLog('${l.id}')">🗑️</button></td></tr>`).join('');
-}
-function toMillis(w){if(!w)return 0;if(w.toMillis)return w.toMillis();return new Date(w).getTime();}
-function formatWaktu(w){if(!w)return'—';const d=w.toDate?w.toDate():new Date(w);return d.toLocaleString('id-ID');}
-function populateLombaFilter(){const s=document.getElementById('filter-lomba');if(!s)return;
-  s.innerHTML='<option value="">Semua Lomba</option>';CONFIG.daftarLomba.forEach(l=>{const o=document.createElement('option');o.value=o.textContent=l;s.appendChild(o);});}
-function generateAdminQR(){const c=document.getElementById('admin-qr-pendaftaran'),u=document.getElementById('admin-qr-url');if(!c)return;
-  const url=`${location.origin}${location.pathname}?page=peserta`;if(u)u.textContent=url;
-  c.innerHTML='';new QRCode(c,{text:url,width:220,height:220,correctLevel:QRCode.CorrectLevel.H});}
-function printQR(){const box=document.getElementById('admin-qr-pendaftaran');if(!box)return;
-  const cv=box.querySelector('canvas'),im=box.querySelector('img');const src=cv?cv.toDataURL():(im?im.src:'');if(!src)return;
-  const w=window.open('');w.document.write(`<html><body style="text-align:center;padding:2rem;font-family:sans-serif">
-    <h2>QR Pendaftaran</h2><p>${CONFIG.eventTitle}</p><img src="${src}" style="width:300px"/>
-    <p style="margin-top:1rem;font-size:.8rem">Scan untuk mendaftar</p>
-    <script>window.onload=()=>{window.print();window.close()}<\/script></body></html>`);}
-
-/* ================================================================
-   BAGIAN 14 — AUDIO & EFEK
-   ================================================================ */
-function playSound(id){try{const e=document.getElementById(id);if(!e)return;e.currentTime=0;e.volume=.5;e.play().catch(()=>{});}catch(e){}}
-/**
- * Toggle mute/unmute musik.
- * Saat dinyalakan, kalau event belum mulai → BGM disiapkan (unlock) tapi
- * baru benar-benar bunyi pas countdown GO!. Kalau event sedang jalan → langsung bunyi.
- */
-function toggleMusic(){
-  const b=document.getElementById('bgm-loop'),btn=document.getElementById('btn-music');
-  if(!b)return;
-  if(STATE.musicOn){
-    // Matikan
-    b.pause(); STATE.musicOn=false; if(btn)btn.textContent='🔇';
-  } else {
-    // Nyalakan
-    STATE.musicOn=true; if(btn)btn.textContent='🎵';
-    // Unlock audio: putar sebentar lalu pause (trik agar browser izinkan autoplay nanti)
-    unlockAudio();
-    // Kalau event sedang berjalan, langsung putar. Kalau belum, tunggu countdown GO!
-    if (STATE.eventStatus==='running') playBGM();
-  }
-}
-
-/**
- * "Unlock" + "hangatkan" semua audio saat ada interaksi user.
- * Memutar tiap audio sebentar (volume 0) lalu pause → browser memuat
- * file ke memori, sehingga saat dibutuhkan (countdown) langsung bunyi tanpa delay.
- */
-function unlockAudio(){
-  if (STATE._audioUnlocked) return;
-  STATE._audioUnlocked = true;
-
-  // Hangatkan semua elemen audio sekaligus
-  const ids = ['bgm-loop','sfx-countdown','sfx-confetti','sfx-rank-up','sfx-rank-down','sfx-scan-ok','sfx-scan-err','sfx-timeup'];
-  ids.forEach(id => {
-    const a = document.getElementById(id);
-    if (!a) return;
-    const volAsli = (id==='bgm-loop') ? 0.15 : 0.5;
-    a.volume = 0;
-    a.play().then(() => {
-      a.pause(); a.currentTime = 0; a.volume = volAsli;
-    }).catch(()=>{});
-  });
-}
-
-/** Mulai putar BGM (hanya jika musik dalam keadaan ON / tidak di-mute) */
-function playBGM(){
-  const b=document.getElementById('bgm-loop');
-  if(!b) return;
-  if(!STATE.musicOn) return;   // kalau di-mute, jangan bunyi
-  b.volume=0.15;
-  b.play().catch(()=>{
-    console.info('[BGM] Autoplay diblokir. Klik tombol musik 🎵 dulu untuk mengaktifkan.');
-  });
-}
-function fireConfetti(){if(typeof confetti==='undefined')return;
-  confetti({particleCount:120,spread:80,origin:{y:.6},colors:['#F5C842','#FFE68A','#9B1B30','#1A6B4A','#FDF3DC'],scalar:1.2});
-  setTimeout(()=>{confetti({particleCount:60,angle:60,spread:55,origin:{x:0},colors:['#F5C842','#9B1B30']});
-  confetti({particleCount:60,angle:120,spread:55,origin:{x:1},colors:['#1A6B4A','#FFE68A']});},600);playSound('sfx-confetti');}
-
-/**
- * Partikel background — sekarang pakai logo Penabur (logo-penabur.png).
- * Kalau file logo tidak ada, otomatis fallback ke emoji bintang.
- */
-function spawnParticles(){
-  const c=document.getElementById('particles');if(!c)return;
-  for(let i=0;i<14;i++){
-    const el=document.createElement('div');el.className='particle particle-logo';
-    // Pakai <img> logo penabur; jika gagal load → ganti jadi emoji
-    const img=document.createElement('img');
-    img.src='logo-penabur.png';
-    img.style.cssText='width:100%;height:100%;object-fit:contain;opacity:.5';
-    img.onerror=()=>{ el.textContent='✨'; el.removeChild(img); };
-    el.appendChild(img);
-    const sz=18+Math.random()*22;
-    el.style.left=`${Math.random()*100}%`;
-    el.style.width=`${sz}px`;el.style.height=`${sz}px`;
-    el.style.animationDuration=`${14+Math.random()*16}s`;
-    el.style.animationDelay=`${Math.random()*20}s`;
-    c.appendChild(el);
-  }
-}
-
-/* ================================================================
-   BAGIAN 15 — UTILITAS
-   ================================================================ */
-function escHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
-function showToast(msg){let t=document.getElementById('global-toast');
-  if(!t){t=document.createElement('div');t.id='global-toast';
-    t.style.cssText='position:fixed;bottom:2rem;left:50%;transform:translateX(-50%) translateY(20px);z-index:9999;background:linear-gradient(135deg,#2A1000,#4A2000);border:1.5px solid var(--gold-dark);border-radius:10px;padding:.7rem 1.3rem;color:var(--gold-light);font-family:var(--font-ui);font-size:.82rem;box-shadow:0 8px 30px rgba(0,0,0,.7);opacity:0;transition:all .3s ease;pointer-events:none;text-align:center;max-width:90vw';
-    document.body.appendChild(t);}
-  t.textContent=msg;t.style.opacity='1';t.style.transform='translateX(-50%) translateY(0)';
-  setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(20px)';},3000);}
-async function deleteCollection(name){const snap=await db.collection(name).get();const b=db.batch();snap.forEach(d=>b.delete(d.ref));await b.commit();}
-
-/* ================================================================
-   BAGIAN 16 — MODAL BANTUAN (auto-show sekali per device)
-   ================================================================ */
-const HELP_CONTENT = {
-  peserta:{icon:'🎭',title:'Panduan Peserta',steps:[
-    '<strong>Daftar</strong> dengan nickname (diakhiri "Fam"), kelas, username (diawali "peserta"), dan password.',
-    '<strong>Login</strong> pakai username & password kamu (bisa dari HP mana saja).',
-    '<strong>Upload foto</strong> dengan mengetuk lingkaran foto. Tampil di leaderboard kalau Top 3.',
-    '<strong>Tunjukkan QR Code</strong> ke panitia setiap selesai ikut/menang lomba.',
-  ],note:'💡 Nickname diakhiri "Fam", username diawali "peserta". Simpan password baik-baik ya!'},
-  panitia:{icon:'⚡',title:'Panduan Panitia',steps:[
-    'Pastikan <strong>event sudah dimulai admin</strong> (banner hijau di atas).',
-    '<strong>Pilih lomba</strong> yang sedang berlangsung.',
-    '<strong>Pilih mode:</strong> Jawara (menang) atau Penjelajah (ikut).',
-    '<strong>Scan QR</strong> peserta. Poin otomatis +1. Sudah pernah = ditolak otomatis.',
-  ],note:'💡 Scan hanya bisa selama event berjalan. Kalau timer habis, scan otomatis nonaktif.'},
-};
-function showHelp(page){const d=HELP_CONTENT[page];if(!d)return;
-  document.getElementById('help-icon').textContent=d.icon;
-  document.getElementById('help-title').textContent=d.title;
-  document.getElementById('help-content').innerHTML=`<ol>${d.steps.map(s=>`<li>${s}</li>`).join('')}</ol>${d.note?`<div class="help-note">${d.note}</div>`:''}`;
-  document.getElementById('help-overlay').style.display='flex';}
-function closeHelp(event){if(event&&event.target.id!=='help-overlay')return;document.getElementById('help-overlay').style.display='none';}
-
-/**
- * Tampilkan help otomatis SETIAP kali halaman dibuka.
- * @param {'peserta'|'panitia'} page
- */
-function maybeAutoHelp(page) {
-  // Delay sebentar agar halaman ter-render dulu, lalu tampilkan help
-  setTimeout(() => showHelp(page), 500);
-}
+.vote-result-count { font-family:var(--font-ui); font-size:1rem; color:var(--cream); margin-bottom:.6rem; }
+.vote-result-sparkle { font-size:1.2rem; color:var(--gold); letter-spacing:.5em; animation:pulse 1.8s ease-in-out infinite; }
