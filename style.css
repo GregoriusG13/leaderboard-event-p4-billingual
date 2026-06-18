@@ -104,8 +104,8 @@ html, body { width:100%; min-height:100%; overflow-x:hidden; background:#0E0600;
 .rank-1 .podium-avatar::after { content:''; position:absolute; inset:-4px; border-radius:50%; border:2px solid var(--gold); animation:glowRing 1.5s ease-in-out infinite; }
 @keyframes glowRing { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:.4;transform:scale(1.15)} }
 .podium-avatar img { width:100%; height:100%; object-fit:cover; border-radius:50%; }
-.podium-name { font-family:var(--font-ui); font-size:clamp(.55rem,1.1vw,.75rem); color:var(--cream); text-align:center; margin-top:.3rem; max-width:70px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.podium-score { font-family:var(--font-display); font-size:clamp(.6rem,1.2vw,.8rem); color:var(--gold); }
+.podium-name { font-family:var(--font-ui); font-size:clamp(.7rem,1.5vw,1rem); color:var(--cream); text-align:center; margin-top:.3rem; max-width:90px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.podium-score { font-family:var(--font-display); font-size:clamp(.75rem,1.6vw,1.05rem); color:var(--gold); }
 .podium-base { width:clamp(50px,6vw,75px); border-radius:4px 4px 0 0; display:flex; align-items:center; justify-content:center; font-family:var(--font-display); font-size:clamp(.9rem,1.8vw,1.1rem); font-weight:700; color:rgba(255,255,255,.7); margin-top:.3rem; box-shadow:inset 0 -4px 0 rgba(0,0,0,.3); }
 .rank-1 .podium-base { height:clamp(32px,4vw,48px); background:linear-gradient(180deg,#8B6914,#5C4000); }
 .rank-2 .podium-base { height:clamp(22px,3vw,34px); background:linear-gradient(180deg,#606060,#303030); }
@@ -119,9 +119,9 @@ html, body { width:100%; min-height:100%; overflow-x:hidden; background:#0E0600;
 .rank-item:hover { transform:perspective(400px) rotateX(0deg) translateY(-3px) scale(1.02); box-shadow:0 8px 0 rgba(0,0,0,.5),0 12px 24px rgba(0,0,0,.4); background:rgba(255,255,255,.12); border-color:rgba(245,200,66,.35); }
 .rank-num { font-family:var(--font-display); font-size:.75rem; color:var(--gold); text-align:center; }
 .rank-info { overflow:hidden; }
-.rank-name { font-family:var(--font-ui); font-size:clamp(.65rem,1.3vw,.8rem); color:var(--cream); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
-.rank-origin { font-size:clamp(.5rem,.9vw,.65rem); color:var(--cream-dark); font-style:italic; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.rank-score { font-family:var(--font-display); font-size:clamp(.7rem,1.4vw,.85rem); color:var(--gold-light); text-align:right; white-space:nowrap; text-shadow:0 0 8px var(--gold); }
+.rank-name { font-family:var(--font-ui); font-size:clamp(.85rem,1.8vw,1.15rem); color:var(--cream); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:600; }
+.rank-origin { font-size:clamp(.65rem,1.2vw,.85rem); color:var(--cream-dark); font-style:italic; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rank-score { font-family:var(--font-display); font-size:clamp(.95rem,2vw,1.3rem); color:var(--gold-light); text-align:right; white-space:nowrap; text-shadow:0 0 8px var(--gold); }
 .rank-change { position:absolute; left:0; top:0; bottom:0; width:3px; border-radius:8px 0 0 8px; }
 .rank-change.up   { background:#4CAF50; box-shadow:0 0 8px #4CAF50; }
 .rank-change.down { background:#F44336; box-shadow:0 0 8px #F44336; }
@@ -353,16 +353,16 @@ input:focus,select:focus { outline:none; border-color:var(--gold); box-shadow:0 
 
 /* ── Timer di header leaderboard ── */
 .timer-display {
-  display:flex; align-items:center; gap:.4rem;
+  display:flex; align-items:center; gap:.5rem;
   background:linear-gradient(135deg,rgba(245,200,66,.2),rgba(184,134,11,.15));
-  border:1.5px solid var(--gold); border-radius:20px;
-  padding:.3rem .8rem; box-shadow:0 0 16px rgba(245,200,66,.3);
+  border:2px solid var(--gold); border-radius:24px;
+  padding:.5rem 1.2rem; box-shadow:0 0 16px rgba(245,200,66,.3);
 }
-.timer-icon { font-size:1rem; }
+.timer-icon { font-size:1.5rem; }
 .timer-text {
-  font-family:var(--font-display); font-size:1.1rem; font-weight:700;
+  font-family:var(--font-display); font-size:1.8rem; font-weight:700;
   color:var(--gold-light); text-shadow:0 0 10px var(--gold);
-  letter-spacing:.05em; min-width:64px; text-align:center;
+  letter-spacing:.05em; min-width:100px; text-align:center;
 }
 
 /* ── Overlay countdown 3-2-1 ── */
