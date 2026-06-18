@@ -67,6 +67,7 @@ const STATE = {
   countdownDone:false, // sudah tampilkan animasi 3-2-1?
   _lastCountdownEndAt:null, // endAt terakhir yang sudah ditampilkan countdown-nya
   _endToastShown:false,     // sudah tampilkan toast "event selesai"?
+  _voteAutoOpened:false,    // sudah auto-buka voting di peserta?
 };
 
 /* ================================================================
@@ -310,6 +311,13 @@ function onTimerUpdate() {
   if (page==='leaderboard') updateLeaderboardTimer();
   if (page==='panitia')     updatePanitiaStatus();
   if (page==='admin')       updateAdminTimerUI();
+
+   // Di halaman peserta: saat event baru saja berakhir, otomatis buka modal voting
+  if (page==='peserta' && STATE.eventStatus==='ended' && !STATE._voteAutoOpened && STATE.pesertaAktif) {
+    STATE._voteAutoOpened = true;
+    setTimeout(() => showVoting(), 600);
+  }
+  if (STATE.eventStatus==='running') STATE._voteAutoOpened = false;
 
   // Jalankan interval lokal untuk hitung mundur tampilan
   startLocalTimerTick();
@@ -660,6 +668,10 @@ function tampilkanProfil(peserta) {
   const qc=document.getElementById('profile-qr-canvas');
   if (qc){ qc.innerHTML=''; new QRCode(qc,{text:peserta.id,width:170,height:170,correctLevel:QRCode.CorrectLevel.H}); }
   updateProfilPoin(peserta.id);
+  if (STATE.eventStatus==='ended' && !STATE._voteAutoOpened) {
+    STATE._voteAutoOpened = true;
+    setTimeout(() => showVoting(), 600);
+  }
 }
 function updateProfilPoin(id) {
   const poin=getPoinPeserta(id);
