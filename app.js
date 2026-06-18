@@ -362,6 +362,15 @@ async function mulaiEvent() {
   });
   showToast(`▶️ Event dimulai! Durasi ${menit} menit`);
 }
+/** ── ADMIN: Stop event ── */
+async function stopEvent() {
+  if (STATE.eventStatus !== 'running') { showToast('⚠️ Tidak ada event yang sedang berjalan'); return; }
+  if (!confirm('Hentikan permainan sekarang? Scan akan ditutup & voting dibuka. Data tetap aman.')) return;
+  await db.collection('event').doc('status').set({
+    status:'ended', endAt: Date.now(), startedAt: STATE.eventStartedAt || Date.now(),
+  });
+  showToast('⏹️ Permainan dihentikan. Leaderboard final ditampilkan.');
+}
 
 /** ── ADMIN: Reset event ── */
 async function resetEvent() {
@@ -376,6 +385,7 @@ function updateAdminTimerUI() {
   const cdEl    = document.getElementById('timer-countdown-big');
   const inputRow= document.getElementById('timer-input-row');
   const btnMulai= document.getElementById('btn-mulai-timer');
+  const btnStop = document.getElementById('btn-stop-timer');
   if (!valueEl) return;
 
   if (STATE.eventStatus==='running') {
